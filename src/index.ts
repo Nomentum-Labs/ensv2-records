@@ -14,9 +14,9 @@ import { ProfileService } from './profile.js';
 const config = loadConfig();
 const client = createClient(config);
 const cache = await createCache(config.redisUrl, `ensv2:${config.chain}:`);
-const db = config.databaseUrl ? createPool(config.databaseUrl) : undefined;
+const db = config.database ? createPool(config.database === 'env' ? undefined : config.database.url) : undefined;
 
-if (config.mode !== 'api' && !db) throw new Error('MODE=indexer/all needs DATABASE_URL');
+if (config.mode !== 'api' && !db) throw new Error('MODE=indexer/all needs DATABASE_URL (or PGHOST/PGUSER/PGPASSWORD/PGDATABASE)');
 if (db) {
   const applied = await migrate(db);
   if (applied.length) console.log(`applied migrations: ${applied.join(', ')}`);

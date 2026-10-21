@@ -66,7 +66,8 @@ export type Config = {
   recordKeys: string[];
   coinTypes: number[];
   mode: 'api' | 'indexer' | 'all';
-  databaseUrl?: string;
+  /** Postgres connection: a URL, or 'env' to let pg read PGHOST/PGUSER/PGPASSWORD/PGDATABASE/PGPORT. */
+  database?: { url: string } | 'env';
   indexer: {
     rootRegistry?: string;
     startBlock?: number;
@@ -101,7 +102,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     recordKeys: list(e.PROFILE_RECORDS) ?? DEFAULT_RECORD_KEYS,
     coinTypes: list(e.MULTICOIN_CHAINS)?.map(Number) ?? DEFAULT_COIN_TYPES,
     mode: e.MODE,
-    databaseUrl: e.DATABASE_URL,
+    database: databaseConfig(e.DATABASE_URL, env.PGHOST),
     indexer: {
       rootRegistry: (e.ROOT_REGISTRY ?? ENSV2_PRESETS[e.CHAIN].rootRegistry)?.toLowerCase(),
       startBlock: e.INDEX_START_BLOCK ?? ENSV2_PRESETS[e.CHAIN].startBlock,
@@ -111,4 +112,27 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       pollIntervalMs: e.POLL_INTERVAL_MS,
     },
   };
+}
+
+/**
+ * DATABASE_URL must be a valid URL, so special characters in the password (/ # ? @ % : etc.) have
+ * to be percent-encoded. To avoid that, set PGHOST/PGUSER/PGPASSWORD/PGDATABASE instead.
+ * The error never includes the value, which holds the password.
+ */
+function databaseConfig(url: string | undefined, pgHost: string | undefined): Config['database'] {
+  if (url) {
+    let parsed: URL;
+    try {
+      parsed = new URL(url);
+    } catch {
+      throw new Error(
+        'DATABASE_URL is not a valid URL. Percent-encode special characters in the password ' +
+          '(encodeURIComponent), remove surrounding quotes, or set PGHOST/PGUSER/PGPASSWORD/PGDATABASE instead.',
+      );
+    }
+    if (!/^postgres(ql)?:$/.test(parsed.protocol)) throw new Error('DATABASE_URL must start with postgresql:// or postgres://');
+    if (!parsed.hostname) throw new Error('DATABASE_URL has no host (a "#" or "/" in the password ends the URL early; percent-encode it)');
+    return { url };
+  }
+  return pgHost ? 'env' : undefined;
 }

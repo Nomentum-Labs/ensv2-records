@@ -18,7 +18,8 @@ const registryAbi = parseAbi([
 
 const config = loadConfig();
 const client = createClient(config);
-const db = createPool(config.databaseUrl!);
+if (!config.database) throw new Error('set DATABASE_URL or PGHOST/PGUSER/PGPASSWORD/PGDATABASE');
+const db = createPool(config.database === 'env' ? undefined : config.database.url);
 const sample = Number(process.argv[2] ?? 300);
 const now = Math.floor(Date.now() / 1000);
 

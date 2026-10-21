@@ -5,8 +5,9 @@ import pg from 'pg';
 export type Db = pg.Pool;
 export type Tx = pg.PoolClient;
 
-export function createPool(url: string): Db {
-  return new pg.Pool({ connectionString: url, max: 10 });
+/** `url`, or undefined to use pg's PGHOST/PGUSER/PGPASSWORD/PGDATABASE/PGPORT env vars. */
+export function createPool(url?: string): Db {
+  return new pg.Pool({ ...(url ? { connectionString: url } : {}), max: 10 });
 }
 
 export async function withTx<T>(db: Db, fn: (tx: Tx) => Promise<T>): Promise<T> {

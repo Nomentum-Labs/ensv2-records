@@ -16,6 +16,8 @@ GitHub services: **Dockerfile path** `Dockerfile`, **Build context** `.` (these 
 
 Mark anything with a credential as **secret**. Plain variables are also passed to builds as build args.
 
+The database connection uses Postgres's standard `PG*` variables, so the password never goes inside a URL. `DATABASE_URL` also works, but special characters in the password (`/ # ? @ % :`) must be percent-encoded. The service rejects a malformed URL at startup without printing it.
+
 **db**
 - `POSTGRES_USER=ensv2`, `POSTGRES_DB=ensv2`, `POSTGRES_PASSWORD` (secret, generate one)
 - volume `data` → `/var/lib/postgresql/data`
@@ -27,7 +29,10 @@ Mark anything with a credential as **secret**. Plain variables are also passed t
 MODE=indexer
 CHAIN=sepolia
 RPC_URL=<sepolia RPC>                                                   # secret
-DATABASE_URL=postgresql://ensv2:<POSTGRES_PASSWORD>@ensv2-prod-db:5432/ensv2   # secret
+PGHOST=ensv2-prod-db
+PGUSER=ensv2
+PGDATABASE=ensv2
+PGPASSWORD=<same as db POSTGRES_PASSWORD>                         # secret
 REDIS_URL=redis://ensv2-prod-redis:6379
 ```
 The RPC must allow `eth_getLogs` with no address filter over 2k-block ranges (Alchemy does; publicnode doesn't). Migrations run automatically at startup. A full Sepolia backfill takes about a minute.
@@ -38,7 +43,10 @@ MODE=api
 CHAIN=sepolia
 PORT=3000
 RPC_URL=<sepolia RPC>                                                   # secret
-DATABASE_URL=postgresql://ensv2:<POSTGRES_PASSWORD>@ensv2-prod-db:5432/ensv2   # secret
+PGHOST=ensv2-prod-db
+PGUSER=ensv2
+PGDATABASE=ensv2
+PGPASSWORD=<same as db POSTGRES_PASSWORD>                         # secret
 REDIS_URL=redis://ensv2-prod-redis:6379
 CHAIN_RPC_1=http://eth-archive-erigon:8545                              # mainnet NFT avatars
 ```
@@ -51,9 +59,9 @@ PORT=3000
 RPC_URL=http://eth-archive-erigon:8545
 REDIS_URL=redis://ensv2-prod-redis:6379
 ```
-With no `DATABASE_URL`, mainnet runs without the index and fetches the default key list, the same as phase 1. When ENS publishes the final mainnet ENSv2 addresses:
+With no database variables, mainnet runs without the index and fetches the default key list, the same as phase 1. When ENS publishes the final mainnet ENSv2 addresses:
 1. Add `mainnet-indexer`, configured like `sepolia-indexer`, with `CHAIN=mainnet`, `ROOT_REGISTRY`, `INDEX_START_BLOCK` and `ENSV1_RESOLVER` set.
-2. Give `mainnet-api` the same `DATABASE_URL`. Both chains can share one database, because the cursor is per chain. The registry and record tables are not partitioned by chain, though, so a separate database per chain is cleaner.
+2. Give `mainnet-api` the same `PG*` variables. Both chains can share one database, because the cursor is per chain. The registry and record tables are not partitioned by chain, though, so a separate database per chain is cleaner.
 
 ## Checks after deploy
 
