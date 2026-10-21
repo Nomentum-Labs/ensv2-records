@@ -77,3 +77,21 @@ describe('http', () => {
     assert.deepEqual(await (await get('/nope')).json(), { status: 404, error: 'Unknown route' });
   });
 });
+
+describe('docs', () => {
+  it('base URL redirects to the API reference', async () => {
+    const r = await get('/');
+    assert.equal(r.status, 307);
+    assert.equal(r.headers.get('location'), '/docs');
+  });
+
+  it('serves a pinned Scalar page and an OpenAPI spec covering every route', async () => {
+    const page = await (await get('/docs')).text();
+    assert.match(page, /@scalar\/api-reference@\d+\.\d+\.\d+\/.*integrity="sha384-/s);
+    const spec = (await (await get('/docs/openapi.json')).json()) as { openapi: string; paths: Record<string, unknown> };
+    assert.equal(spec.openapi, '3.1.0');
+    for (const p of ['/n/{name}', '/a/{address}', '/u/{nameOrAddress}', '/bulk/n', '/bulk/a', '/bulk/u', '/i/{nameOrAddress}', '/h/{nameOrAddress}', '/v2/n/{name}', '/health', '/this']) {
+      assert.ok(spec.paths[p], `missing ${p}`);
+    }
+  });
+});

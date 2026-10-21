@@ -2,6 +2,7 @@ import { Hono, type Context } from 'hono';
 import { cors } from 'hono/cors';
 import type { PublicClient } from 'viem';
 import type { Config } from './config.js';
+import { docsHtml, openApiSpec } from './docs.js';
 import type { IndexQueries } from './indexer/queries.js';
 import type { Profile, ProfileService } from './profile.js';
 import { NotFoundError, ResolverFailedError } from './resolve/forward.js';
@@ -54,7 +55,13 @@ export function createApp(deps: { profiles: ProfileService; client: PublicClient
     return l.type === 'name' ? profiles.byName(l.name, fresh) : profiles.byAddress(l.address, fresh);
   };
 
-  app.get('/', (c) => c.json(meta()));
+  // like enstate: the base URL redirects to the API reference
+  app.get('/', (c) => c.redirect('/docs', 307));
+  const spec = openApiSpec(config, Boolean(index));
+  const html = docsHtml(config);
+  app.get('/docs', (c) => c.html(html));
+  app.get('/docs/', (c) => c.redirect('/docs', 301));
+  app.get('/docs/openapi.json', (c) => c.json(spec));
   app.get('/this', (c) => c.json(meta()));
   app.get('/health', async (c) => {
     try {

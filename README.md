@@ -31,6 +31,7 @@ Routes, field names, bulk format and error bodies follow enstate.
 | `GET /i/:nameOrAddress`, `/h/:nameOrAddress` | 303 to the avatar / header image (`data:` images served inline) |
 | `GET /bulk/n?names[]=…`, `/bulk/a?addresses[]=…`, `/bulk/u?queries[]=…` | `{response_length, response: [{type:'success', …profile} \| {type:'error', status, error}]}` |
 | `GET /this`, `/health` | Version and chain / RPC health |
+| `GET /` → `/docs` | API reference (Scalar, pinned + SRI) rendered from `/docs/openapi.json` |
 
 Add `?fresh=true` to skip the cache read.
 
