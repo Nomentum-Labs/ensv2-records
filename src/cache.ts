@@ -55,14 +55,34 @@ export class RedisCache implements Cache {
   }
 }
 
+/** Namespaces keys so several instances (e.g. mainnet and sepolia) can share one Redis. */
+export class PrefixedCache implements Cache {
+  constructor(
+    private readonly inner: Cache,
+    private readonly prefix: string,
+  ) {}
+  get kind() {
+    return this.inner.kind;
+  }
+  get(key: string) {
+    return this.inner.get(this.prefix + key);
+  }
+  set(key: string, value: string, ttlSeconds: number) {
+    return this.inner.set(this.prefix + key, value, ttlSeconds);
+  }
+  del(...keys: string[]) {
+    return this.inner.del(...keys.map((k) => this.prefix + k));
+  }
+}
+
 /**
  * Connects to Redis if configured. Unlike enstate, a configured-but-unreachable Redis is a
  * startup error rather than a silent switch to no caching (that is how hotbox ended up uncached).
  */
-export async function createCache(redisUrl?: string): Promise<Cache> {
+export async function createCache(redisUrl?: string, prefix = ''): Promise<Cache> {
   if (!redisUrl) return new MemoryCache();
   const redis = new Redis(redisUrl, { lazyConnect: true, maxRetriesPerRequest: 2 });
   await redis.connect();
   await redis.ping();
-  return new RedisCache(redis);
+  return prefix ? new PrefixedCache(new RedisCache(redis), prefix) : new RedisCache(redis);
 }

@@ -31,7 +31,7 @@ const schema = z.object({
   ROOT_REGISTRY: z.string().optional(),
   INDEX_START_BLOCK: z.coerce.number().int().nonnegative().optional(),
   ENSV1_RESOLVER: z.string().optional(),
-  CONFIRMATIONS: z.coerce.number().int().nonnegative().default(12),
+  CONFIRMATIONS: z.coerce.number().int().nonnegative().default(0),
   LOG_RANGE: z.coerce.number().int().positive().default(2_000),
   POLL_INTERVAL_MS: z.coerce.number().int().positive().default(12_000),
 });

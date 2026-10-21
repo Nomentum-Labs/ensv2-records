@@ -17,10 +17,11 @@ export type IndexerOptions = {
 };
 
 /**
- * Follows the chain `confirmations` blocks behind head, reading every indexed event from every
+ * Follows the chain `confirmations` blocks behind head (default 0: index the tip), reading every indexed event from every
  * contract with one getLogs per range. Each range is applied in one transaction together with
  * the cursor, so a crash never half-applies a range. Reorgs deeper than `confirmations` are not
- * handled.
+ * rolled back; at 0 confirmations a reorged tip block can leave stale index rows until the
+ * affected names change again (profile values still come live from the UniversalResolver).
  */
 export class Indexer {
   private stopped = false;
@@ -66,6 +67,12 @@ export class Indexer {
         try {
           logs = await this.fetchLogs(from, to);
         } catch (err) {
+          if (isAheadOfHead(err)) {
+            // Erigon 3.5+ reports eth_blockNumber before the block is executed, and getLogs rejects
+            // it until it is. Transient; retry shortly without shrinking the range.
+            await sleep(250);
+            continue;
+          }
           if (isRangeError(err) && this.range > 1) {
             this.range = Math.max(1, Math.floor(this.range / 2));
             this.log(`getLogs range too large, retrying with ${this.range} blocks`);
@@ -140,7 +147,13 @@ export class Indexer {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+const errorText = (err: unknown) => String((err as { details?: string }).details ?? (err as Error).message ?? '').toLowerCase();
+
+function isAheadOfHead(err: unknown): boolean {
+  return /beyond current head|header not found|unknown block|block not found/.test(errorText(err));
+}
+
 function isRangeError(err: unknown): boolean {
-  const msg = String((err as { details?: string }).details ?? (err as Error).message ?? '').toLowerCase();
+  const msg = errorText(err);
   return /block range|range is too large|limit exceeded|response size|size limit|too many (results|logs)|query returned more than/.test(msg);
 }

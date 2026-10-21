@@ -86,7 +86,7 @@ Configuration lives in `.env.example`, validated in `src/config.ts`. The Univers
 
 The UniversalResolver can return any record, but it can't tell you which text keys a name has. The indexer fills that gap and keeps the cache fresh.
 
-- **Reading:** it follows the chain `CONFIRMATIONS` blocks behind head. Each `eth_getLogs` call covers every indexed event from **every contract** (no address filter), because discovering resolvers through factories misses some. Each block range and the cursor are written in one transaction.
+- **Reading:** it follows the chain `CONFIRMATIONS` blocks behind head (default 0, the tip). Each `eth_getLogs` call covers every indexed event from **every contract** (no address filter), because discovering resolvers through factories misses some. Each block range and the cursor are written in one transaction.
 - **Registry tree** (`registry_labels`, `registry_paths`):
   - Labels come from `LabelRegistered`/`LabelReserved`, keyed by token id with the 32 version bits zeroed, so regenerated tokens keep their row.
   - Subregistry links give each registry reachable from the root a name, and every label under it a full name and node.
@@ -113,7 +113,7 @@ node --env-file=.env dist/scripts/verify-index.js 400
 ```
 
 Known limits:
-- Reorgs deeper than `CONFIRMATIONS` aren't rolled back.
+- Reorgs deeper than `CONFIRMATIONS` (default 0) aren't rolled back. A reorged tip block can leave stale index rows until those names change again; profile values still come live from the UniversalResolver.
 - v1 names only get keys set after the v2 start block. The full v1 history isn't indexed, so v1 names mostly rely on the default key list.
 - Offchain names can't be indexed.
 

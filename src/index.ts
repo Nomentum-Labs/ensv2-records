@@ -13,7 +13,7 @@ import { ProfileService } from './profile.js';
 // (needed for cache invalidation when there is no shared Redis).
 const config = loadConfig();
 const client = createClient(config);
-const cache = await createCache(config.redisUrl);
+const cache = await createCache(config.redisUrl, `ensv2:${config.chain}:`);
 const db = config.databaseUrl ? createPool(config.databaseUrl) : undefined;
 
 if (config.mode !== 'api' && !db) throw new Error('MODE=indexer/all needs DATABASE_URL');
