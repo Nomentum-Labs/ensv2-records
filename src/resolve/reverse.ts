@@ -2,7 +2,7 @@ import type { Address, PublicClient } from 'viem';
 import { universalResolverAbi } from '../abis.js';
 import { LOCAL_BATCH_GATEWAY, UNIVERSAL_RESOLVER } from '../chain.js';
 import { ETH_COIN_TYPE } from '../records.js';
-import { revertErrorName } from './forward.js';
+import { classifyRevert, revertErrorName } from './forward.js';
 import { normalizeName } from './name.js';
 
 /** UR errors that mean "no valid primary name" rather than an infrastructure failure. */
@@ -40,6 +40,8 @@ export async function lookupPrimaryName(
   } catch (err) {
     const name = revertErrorName(err);
     if (name && NO_PRIMARY_ERRORS.has(name)) return null;
+    // the primary name's own resolver can't resolve it (e.g. an unreachable DNS name) → not a valid primary
+    if (classifyRevert(err).kind === 'not_found') return null;
     throw err;
   }
 }

@@ -4,7 +4,7 @@ import type { PublicClient } from 'viem';
 import type { Config } from './config.js';
 import type { IndexQueries } from './indexer/queries.js';
 import type { Profile, ProfileService } from './profile.js';
-import { NotFoundError } from './resolve/forward.js';
+import { NotFoundError, ResolverFailedError } from './resolve/forward.js';
 import { guessLookup, InvalidInputError, normalizeName, parseAddress } from './resolve/name.js';
 
 export const VERSION = '0.1.0';
@@ -14,9 +14,10 @@ type BulkItem = ({ type: 'success' } & Profile) | { type: 'error'; status: numbe
 const isFresh = (c: Context) => ['true', '1'].includes(c.req.query('fresh') ?? '');
 
 /** Error → enstate-compatible status + body. */
-function toError(err: unknown): { status: 400 | 404 | 500; error: string } {
+function toError(err: unknown): { status: 400 | 404 | 500 | 502; error: string } {
   if (err instanceof InvalidInputError) return { status: 400, error: err.message };
   if (err instanceof NotFoundError) return { status: 404, error: 'Not Found' };
+  if (err instanceof ResolverFailedError) return { status: 502, error: err.message };
   console.error(err);
   return { status: 500, error: (err as Error)?.message?.split('\n')[0] ?? 'Internal error' };
 }

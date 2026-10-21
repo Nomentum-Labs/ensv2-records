@@ -5,6 +5,7 @@ import {
   decodeFunctionResult,
   encodeFunctionData,
   namehash,
+  parseAbi,
   size,
   zeroAddress,
   type Address,
@@ -17,6 +18,11 @@ import { dnsEncode } from './name.js';
 
 export class NotFoundError extends Error {
   readonly status = 404;
+}
+
+/** The name's resolver (or its gateway) failed. Like enstate's CCIP failure, this is a 502. */
+export class ResolverFailedError extends Error {
+  readonly status = 502;
 }
 
 export type RecordQuery =
@@ -34,6 +40,43 @@ export const FALLBACK_CHUNK_SIZE = 30;
 
 /** UR errors that mean "this name has no resolver". */
 const NOT_FOUND_ERRORS = new Set(['ResolverNotFound', 'ResolverNotContract']);
+
+/**
+ * Errors a resolver can raise, wrapped by the UR in ResolverError(bytes), that also mean the name
+ * doesn't resolve. UnreachableName comes from ENSv2's DNSTLDResolver when a DNS name's TXT record
+ * points at a resolver that doesn't exist on this chain (e.g. gregskril.com on Sepolia).
+ */
+const innerErrorAbi = parseAbi([
+  'error UnreachableName(bytes name)',
+  'error ResolverNotFound(bytes name)',
+  'error ResolverNotContract(bytes name, address resolver)',
+  'error HttpError(uint16 status, string message)',
+  'error Error(string message)',
+]);
+const INNER_NOT_FOUND = new Set(['UnreachableName', 'ResolverNotFound', 'ResolverNotContract']);
+
+export type RevertKind = { kind: 'not_found' } | { kind: 'resolver_failed'; detail: string } | { kind: 'other' };
+
+/** Sorts a UniversalResolver revert into "name doesn't resolve", "resolver failed" or something else. */
+export function classifyRevert(err: unknown): RevertKind {
+  if (!(err instanceof BaseError)) return { kind: 'other' };
+  const revert = err.walk((e) => e instanceof ContractFunctionRevertedError);
+  if (!(revert instanceof ContractFunctionRevertedError) || !revert.data) return { kind: 'other' };
+  const { errorName, args } = revert.data;
+  if (NOT_FOUND_ERRORS.has(errorName)) return { kind: 'not_found' };
+  if (errorName === 'HttpError') return { kind: 'resolver_failed', detail: `gateway HTTP ${args?.[0]}: ${args?.[1]}` };
+  if (errorName !== 'ResolverError') return { kind: 'other' };
+  const inner = args?.[0] as Hex | undefined;
+  if (!inner || inner === '0x') return { kind: 'resolver_failed', detail: 'resolver reverted without data' };
+  try {
+    const e = decodeErrorResult({ abi: innerErrorAbi, data: inner });
+    if (INNER_NOT_FOUND.has(e.errorName)) return { kind: 'not_found' };
+    if (e.errorName === 'HttpError') return { kind: 'resolver_failed', detail: `gateway HTTP ${e.args[0]}: ${e.args[1]}` };
+    return { kind: 'resolver_failed', detail: `resolver error: ${String(e.args[0])}` };
+  } catch {
+    return { kind: 'resolver_failed', detail: `resolver error ${inner.slice(0, 10)}` };
+  }
+}
 
 const encodeQuery = (node: Hex, q: RecordQuery): Hex => {
   switch (q.kind) {
@@ -121,9 +164,9 @@ export async function resolveRecords(client: PublicClient, name: string, queries
   try {
     return await callUR(client, name, node, queries);
   } catch (err) {
-    const errorName = revertErrorName(err);
-    if (errorName && NOT_FOUND_ERRORS.has(errorName)) throw new NotFoundError(`${name} has no resolver`);
-    if (queries.length <= FALLBACK_CHUNK_SIZE) throw err;
+    const c = classifyRevert(err);
+    if (c.kind === 'not_found') throw new NotFoundError(`${name} does not resolve`);
+    if (queries.length <= FALLBACK_CHUNK_SIZE) throw c.kind === 'resolver_failed' ? new ResolverFailedError(c.detail) : err;
   }
   // The one-shot call failed for a reason other than "no resolver". This happens with offchain
   // resolvers whose gateways reject big bursts, so retry in smaller chunks and keep what works.
@@ -142,6 +185,10 @@ export async function resolveRecords(client: PublicClient, name: string, queries
       answers.push(...chunk.map((): Answer => ({ ok: false, error: msg })));
     }
   }
-  if (!resolver) throw lastError;
+  if (!resolver) {
+    const c = classifyRevert(lastError);
+    if (c.kind === 'not_found') throw new NotFoundError(`${name} does not resolve`);
+    throw c.kind === 'resolver_failed' ? new ResolverFailedError(c.detail) : lastError;
+  }
   return { resolver, answers };
 }

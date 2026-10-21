@@ -51,6 +51,10 @@ describe('sepolia (ENSv2 live)', { skip: !SEPOLIA && 'SEPOLIA_RPC_URL not set' }
     await assert.rejects(s().byName('doesnotexist-zzq9.eth'), NotFoundError);
     await assert.rejects(s().byName('croquis.eth'), NotFoundError);
   });
+
+  it('DNS name whose TXT resolver only exists on mainnet is 404, not 500', async () => {
+    await assert.rejects(s().byName('gregskril.com'), NotFoundError);
+  });
 });
 
 describe('mainnet (ENSv1 today, v2 after the UR cutover)', { skip: !MAINNET && 'MAINNET_RPC_URL not set' }, () => {
@@ -61,6 +65,10 @@ describe('mainnet (ENSv1 today, v2 after the UR cutover)', { skip: !MAINNET && '
     const p = await svc.byName('vitalik.eth');
     assert.equal(p.address, '0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045');
     assert.equal(await svc.primaryName('0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045'), 'vitalik.eth');
+  });
+
+  it('DNS name via its offchain resolver', async () => {
+    assert.equal((await s().byName('gregskril.com')).address, '0x179A862703a4adfb29896552DF9e307980D19285');
   });
 
   it('ipns and swarm contenthash (enstate errors on both)', async () => {
