@@ -1,0 +1,32 @@
+{
+  "name": "ensv2-records",
+  "version": "0.1.0",
+  "description": "ENSv1 + ENSv2 name resolution and records service (enstate-compatible API)",
+  "type": "module",
+  "private": true,
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/src/index.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "npm run build && node --test \"dist/test/unit/**/*.test.js\"",
+    "test:live": "npm run build && node --test --test-concurrency=1 \"dist/test/live/**/*.test.js\"",
+    "compare": "npm run build && node dist/scripts/compare-enstate.js"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "@ensdomains/address-encoder": "1.1.4",
+    "@ensdomains/content-hash": "3.1.1",
+    "@hono/node-server": "2.1.3",
+    "hono": "4.13.13",
+    "ioredis": "6.0.0",
+    "viem": "2.57.3",
+    "zod": "4.6.5"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.5",
+    "typescript": "5.9.3"
+  }
+}
