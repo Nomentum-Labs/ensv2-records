@@ -84,8 +84,7 @@ export class ProfileService {
 
   private async resolve(name: string): Promise<Profile> {
     const { client, config, keys } = this.deps;
-    const extraKeys = await keys.keysFor(name).catch(() => []);
-    const textKeys = [...new Set([...config.recordKeys, ...extraKeys])];
+    const textKeys = config.recordKeys;
     const coinTypes = config.coinTypes.filter((c) => c !== ETH_COIN_TYPE);
     const core = new Set(CORE_RECORD_KEYS);
     const firstPass: RecordQuery[] = [
@@ -93,22 +92,30 @@ export class ProfileService {
       ...textKeys.filter((k) => core.has(k)).map((key): RecordQuery => ({ kind: 'text', key })),
       { kind: 'contenthash' },
     ];
-    const secondPass: RecordQuery[] = [
-      ...textKeys.filter((k) => !core.has(k)).map((key): RecordQuery => ({ kind: 'text', key })),
-      ...coinTypes.map((coinType): RecordQuery => ({ kind: 'coin', coinType })),
-    ];
 
     // Core records first. If that went offchain (CCIP-read was used), stop there to stay under
-    // gateway rate limits; on-chain names get the rest in a second, cheap call.
+    // gateway rate limits; on-chain names get the rest in a second, cheap call, including every
+    // key the records indexer has seen set on the name's resolver.
     const ccipUrls = new Set<string>();
     const first = await ccipUrlStore.run(ccipUrls, () => resolveRecords(client, name, firstPass));
     const queries = [...firstPass];
     const answers = [...first.answers];
     const resolver = first.resolver;
-    if (ccipUrls.size === 0 && secondPass.length) {
-      const second = await ccipUrlStore.run(ccipUrls, () => resolveRecords(client, name, secondPass));
-      queries.push(...secondPass);
-      answers.push(...second.answers);
+    if (ccipUrls.size === 0) {
+      const indexed = await keys.keysFor(name, resolver).catch((err) => {
+        console.warn(`key lookup failed for ${name}: ${(err as Error).message}`);
+        return [] as string[];
+      });
+      const secondKeys = [...new Set([...textKeys, ...indexed])].filter((k) => !core.has(k));
+      const secondPass: RecordQuery[] = [
+        ...secondKeys.map((key): RecordQuery => ({ kind: 'text', key })),
+        ...coinTypes.map((coinType): RecordQuery => ({ kind: 'coin', coinType })),
+      ];
+      if (secondPass.length) {
+        const second = await ccipUrlStore.run(ccipUrls, () => resolveRecords(client, name, secondPass));
+        queries.push(...secondPass);
+        answers.push(...second.answers);
+      }
     }
 
     const errors: Record<string, string> = {};

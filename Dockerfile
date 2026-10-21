@@ -13,6 +13,7 @@ WORKDIR /app
 ENV NODE_ENV=production
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
+COPY migrations ./migrations
 COPY package.json ./
 ARG GIT_REV=dev
 ENV GIT_REV=$GIT_REV

@@ -25,7 +25,30 @@ const schema = z.object({
   AVATAR_VERIFY_NFT_OWNER: bool.default(true),
   PROFILE_RECORDS: z.string().optional(),
   MULTICOIN_CHAINS: z.string().optional(),
+  // indexer
+  MODE: z.enum(['api', 'indexer', 'all']).default('api'),
+  DATABASE_URL: z.string().optional(),
+  ROOT_REGISTRY: z.string().optional(),
+  INDEX_START_BLOCK: z.coerce.number().int().nonnegative().optional(),
+  ENSV1_RESOLVER: z.string().optional(),
+  CONFIRMATIONS: z.coerce.number().int().nonnegative().default(12),
+  LOG_RANGE: z.coerce.number().int().positive().default(2_000),
+  POLL_INTERVAL_MS: z.coerce.number().int().positive().default(12_000),
 });
+
+/**
+ * ENSv2 deployment per chain, from contracts-v2 `post-audit-2` contracts/docs/addresses/sepolia.md
+ * (deployed 2026-10-01). Mainnet stays unset until ENS publishes final addresses; the mainnet
+ * v2 contracts have been redeployed more than once before cutover.
+ */
+const ENSV2_PRESETS: Record<'mainnet' | 'sepolia', { rootRegistry?: string; startBlock?: number; ensV1Resolver?: string }> = {
+  sepolia: {
+    rootRegistry: '0xb458d6a3a77919449d03e7a6903c26827c1ec43f',
+    startBlock: 11820399, // ETHRegistry deploy block; the root's first event is at 11820400
+    ensV1Resolver: '0x322b7581ca210a69c6d0e0d7c88a7688d2789cb0',
+  },
+  mainnet: {},
+};
 
 export type Config = {
   chain: 'mainnet' | 'sepolia';
@@ -42,6 +65,17 @@ export type Config = {
   verifyNftOwner: boolean;
   recordKeys: string[];
   coinTypes: number[];
+  mode: 'api' | 'indexer' | 'all';
+  databaseUrl?: string;
+  indexer: {
+    rootRegistry?: string;
+    startBlock?: number;
+    /** ENSv2's bridge resolver for unmigrated v1 names (the UR reports it instead of the v1 resolver). */
+    ensV1Resolver?: string;
+    confirmations: number;
+    logRange: number;
+    pollIntervalMs: number;
+  };
 };
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
@@ -66,5 +100,15 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     verifyNftOwner: e.AVATAR_VERIFY_NFT_OWNER,
     recordKeys: list(e.PROFILE_RECORDS) ?? DEFAULT_RECORD_KEYS,
     coinTypes: list(e.MULTICOIN_CHAINS)?.map(Number) ?? DEFAULT_COIN_TYPES,
+    mode: e.MODE,
+    databaseUrl: e.DATABASE_URL,
+    indexer: {
+      rootRegistry: (e.ROOT_REGISTRY ?? ENSV2_PRESETS[e.CHAIN].rootRegistry)?.toLowerCase(),
+      startBlock: e.INDEX_START_BLOCK ?? ENSV2_PRESETS[e.CHAIN].startBlock,
+      ensV1Resolver: (e.ENSV1_RESOLVER ?? ENSV2_PRESETS[e.CHAIN].ensV1Resolver)?.toLowerCase(),
+      confirmations: e.CONFIRMATIONS,
+      logRange: e.LOG_RANGE,
+      pollIntervalMs: e.POLL_INTERVAL_MS,
+    },
   };
 }

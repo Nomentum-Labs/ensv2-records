@@ -2,6 +2,7 @@ import { Hono, type Context } from 'hono';
 import { cors } from 'hono/cors';
 import type { PublicClient } from 'viem';
 import type { Config } from './config.js';
+import type { IndexQueries } from './indexer/queries.js';
 import type { Profile, ProfileService } from './profile.js';
 import { NotFoundError } from './resolve/forward.js';
 import { guessLookup, InvalidInputError, normalizeName, parseAddress } from './resolve/name.js';
@@ -26,8 +27,8 @@ function bulkInputs(c: Context, param: string): string[] {
   return [...new Set(raw.map((v) => v.trim().toLowerCase()).filter(Boolean))];
 }
 
-export function createApp(deps: { profiles: ProfileService; client: PublicClient; config: Config }) {
-  const { profiles, client, config } = deps;
+export function createApp(deps: { profiles: ProfileService; client: PublicClient; config: Config; index?: IndexQueries }) {
+  const { profiles, client, config, index } = deps;
   const app = new Hono();
   app.use('*', cors());
 
@@ -56,7 +57,9 @@ export function createApp(deps: { profiles: ProfileService; client: PublicClient
   app.get('/this', (c) => c.json(meta()));
   app.get('/health', async (c) => {
     try {
-      return c.json({ ok: true, chain: config.chain, block: Number(await client.getBlockNumber()) });
+      const block = Number(await client.getBlockNumber());
+      const indexer = index ? await index.status() : undefined;
+      return c.json({ ok: true, chain: config.chain, block, ...(indexer ? { indexer: { ...indexer, lag: indexer.last_block === null ? null : block - indexer.last_block } } : {}) });
     } catch (err) {
       return c.json({ ok: false, error: (err as Error).message.split('\n')[0] }, 503);
     }
@@ -108,6 +111,18 @@ export function createApp(deps: { profiles: ProfileService; client: PublicClient
   };
   app.get('/i/:query', image('avatar'));
   app.get('/h/:query', image('header'));
+
+  /** Indexed ENSv2 registry data for a name: registry, token id, expiry, resolver and stored records. */
+  app.get('/v2/n/:name', async (c) => {
+    if (!index) return c.json({ status: 501, error: 'records index not configured (DATABASE_URL)' }, 501);
+    try {
+      const info = await index.name(normalizeName(c.req.param('name')));
+      return info ? c.json(info) : c.json({ status: 404, error: 'Not Found' }, 404);
+    } catch (err) {
+      const e = toError(err);
+      return c.json(e, e.status);
+    }
+  });
 
   app.notFound((c) => c.json({ status: 404, error: 'Unknown route' }, 404));
   return app;

@@ -1,0 +1,30 @@
+# Local stack: Postgres + Redis + API + indexer (Sepolia). RPC_URL comes from .env.
+services:
+  postgres:
+    image: postgres:17
+    environment: { POSTGRES_PASSWORD: dev, POSTGRES_DB: ensv2_records }
+    volumes: [pgdata:/var/lib/postgresql/data]
+  redis:
+    image: redis:7
+  indexer:
+    build: .
+    env_file: .env
+    environment:
+      MODE: indexer
+      DATABASE_URL: postgresql://postgres:dev@postgres:5432/ensv2_records
+      REDIS_URL: redis://redis:6379
+    depends_on: [postgres, redis]
+    restart: unless-stopped
+  api:
+    build: .
+    env_file: .env
+    environment:
+      MODE: api
+      PORT: "3000"
+      DATABASE_URL: postgresql://postgres:dev@postgres:5432/ensv2_records
+      REDIS_URL: redis://redis:6379
+    ports: ["3000:3000"]
+    depends_on: [postgres, redis, indexer]
+    restart: unless-stopped
+volumes:
+  pgdata:
