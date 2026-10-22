@@ -59,7 +59,7 @@ PORT=3000
 RPC_URL=http://eth-archive-erigon:8545
 REDIS_URL=redis://ensv2-prod-redis:6379
 ```
-With no database variables, mainnet runs without the index and fetches the default key list, the same as phase 1. When ENS publishes the final mainnet ENSv2 addresses:
+With no database variables, mainnet runs without the index and fetches the default key list. When ENS publishes the final mainnet ENSv2 addresses:
 1. Add `mainnet-indexer`, configured like `sepolia-indexer`, with `CHAIN=mainnet`, `ROOT_REGISTRY`, `INDEX_START_BLOCK` and `ENSV1_RESOLVER` set.
 2. Give `mainnet-api` the same `PG*` variables. Both chains can share one database, because the cursor is per chain. The registry and record tables are not partitioned by chain, though, so a separate database per chain is cleaner.
 

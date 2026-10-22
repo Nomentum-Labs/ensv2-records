@@ -3,7 +3,7 @@ import { parseAbi, toEventSelector, type AbiEvent } from 'viem';
 /**
  * Events the indexer reads, from every contract (no address filter). Signatures are from
  * ensdomains/contracts-v2 `post-audit-2` and ens-contracts `staging`; all decoded with zero
- * errors across Sepolia since the v2 deploy (phase 0 survey, 2026-10-20).
+ * errors across Sepolia since the v2 deploy (survey on 2026-10-20).
  */
 export const indexedEvents = parseAbi([
   // ENSv2 registries (PermissionedRegistry, UserRegistry, WrapperRegistry)
