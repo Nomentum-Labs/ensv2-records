@@ -90,7 +90,17 @@ export class Applier {
         return this.subregistryUpdated(log, a.tokenId as bigint, nullIfZeroAddr(a.subregistry));
 
       case 'Linked':
+        await this.bumpRecordCount(log.address, a.recordId as bigint);
         return this.linked(log, a.recordId as bigint, lc(a.node), a.name as Hex);
+      case 'Cleared':
+        // every value of the record is gone (not emitted by the post-audit-2 PermissionedResolver,
+        // but part of IRecordResolver)
+        await this.tx.query('DELETE FROM resolver_records WHERE resolver = $1 AND scope = $2', [log.address, `r:${a.recordId}`]);
+        return this.invalidateScope(log.address, `r:${a.recordId}`);
+      case 'ResolverCreated':
+      case 'EACRolesChanged':
+      case 'ResourceArgument':
+        return this.applyResolverEvent(log);
       case 'TextUpdated':
         return this.record(log, `r:${a.recordId}`, 'text', a.key as string, (a.value as string) || null);
       case 'AddressUpdated':
@@ -262,6 +272,59 @@ export class Applier {
   }
 
   // ---- resolvers ----
+
+  /**
+   * For the one-time backfill of resolver events (see Indexer.backfillResolvers): applies
+   * ResolverCreated, EACRolesChanged and ResourceArgument, and uses Linked only to rebuild
+   * record counts. Every write here is safe to apply out of order or twice.
+   */
+  async applyResolverBackfill(log: DecodedLog): Promise<void> {
+    if (log.eventName === 'Linked') return this.bumpRecordCount(log.address, log.args.recordId as bigint);
+    return this.applyResolverEvent(log);
+  }
+
+  private async applyResolverEvent(log: DecodedLog): Promise<void> {
+    const a = log.args;
+    switch (log.eventName) {
+      case 'ResolverCreated':
+        await this.tx.query(
+          `INSERT INTO resolvers (address, created_block) VALUES ($1, $2)
+           ON CONFLICT (address) DO UPDATE SET created_block = LEAST(resolvers.created_block, EXCLUDED.created_block)`,
+          [log.address, log.block],
+        );
+        return;
+      case 'EACRolesChanged':
+        if (!(await this.isResolver(log.address))) return; // registries use the same access control
+        await this.tx.query(
+          `INSERT INTO resolver_roles (resolver, resource, account, role_bitmap, block, log_index) VALUES ($1, $2, $3, $4, $5, $6)
+           ON CONFLICT (resolver, resource, account) DO UPDATE SET
+             role_bitmap = EXCLUDED.role_bitmap, block = EXCLUDED.block, log_index = EXCLUDED.log_index
+           WHERE (resolver_roles.block, resolver_roles.log_index) < (EXCLUDED.block, EXCLUDED.log_index)`,
+          [log.address, String(a.resource), lc(a.account), String(a.newRoleBitmap), log.block, log.logIndex],
+        );
+        return;
+      case 'ResourceArgument':
+        if (!(await this.isResolver(log.address))) return;
+        await this.tx.query(
+          'INSERT INTO resolver_resource_args (resolver, resource, arg) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING',
+          [log.address, String(a.resource), lc(a.arg)],
+        );
+        return;
+    }
+  }
+
+  private async isResolver(address: string): Promise<boolean> {
+    return (await this.tx.query('SELECT 1 FROM resolvers WHERE address = $1', [address])).rows.length > 0;
+  }
+
+  /** Record ids are handed out in order and every new record is announced with Linked. */
+  private async bumpRecordCount(resolver: string, recordId: bigint) {
+    if (recordId === 0n) return;
+    await this.tx.query('UPDATE resolvers SET record_count = GREATEST(record_count, $2::numeric) WHERE address = $1', [
+      resolver,
+      recordId.toString(),
+    ]);
+  }
 
   private async linked(log: DecodedLog, recordId: bigint, node: string, nameBytes: Hex) {
     const name = safeDnsDecode(nameBytes);

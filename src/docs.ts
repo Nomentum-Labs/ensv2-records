@@ -34,7 +34,7 @@ export const docsHtml = (config: Config) => `<!doctype html>
 </html>
 `;
 
-const nameParam = (name: string, example: string) => ({
+const nameParam = (name: string, example?: string) => ({
   name,
   in: 'path',
   required: true,
@@ -73,8 +73,18 @@ const bulkParam = (name: string, description: string, example: string[]) => ({
 export function openApiSpec(config: Config, hasIndex: boolean) {
   const examples =
     config.chain === 'sepolia'
-      ? { name: 'yoginth.eth', address: '0x113A0ffeADa47e110Ad01098BEBA3403060978FB', names: ['yoginth.eth', 'palau.eth'] }
-      : { name: 'vitalik.eth', address: '0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045', names: ['vitalik.eth', 'nick.eth'] };
+      ? {
+          name: 'yoginth.eth',
+          address: '0x113A0ffeADa47e110Ad01098BEBA3403060978FB',
+          names: ['yoginth.eth', 'palau.eth'],
+          resolver: '0x45600dAd96384A0a2A0A9ac9287D943bcFCf3EF9',
+          account: '0xacaedb9a293def974734b238264b941c2bacbe22',
+        }
+      : { name: 'vitalik.eth', address: '0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045', names: ['vitalik.eth', 'nick.eth'], resolver: undefined, account: undefined };
+  const indexErrors = {
+    '400': { description: 'Invalid address or query parameter', content: json('Error') },
+    '501': { description: 'No records index on this instance', content: json('Error') },
+  };
 
   return {
     openapi: '3.1.0',
@@ -190,6 +200,50 @@ export function openApiSpec(config: Config, hasIndex: boolean) {
           },
         },
       },
+      '/v2/resolvers': {
+        get: {
+          operationId: 'getResolversByAccount',
+          tags: ['Index'],
+          summary: 'PermissionedResolvers an account can manage',
+          description:
+            'Resolvers where `account` holds roles on the root resource, which apply to every key. Accounts holding only the `can_name` role (the deployer\'s namer) are left out. Per-key grants are listed by `/v2/resolvers/{address}`.',
+          parameters: [{ name: 'account', in: 'query', required: true, schema: { type: 'string' }, example: examples.account }],
+          responses: { '200': { description: 'Resolvers', content: json('AccountResolvers') }, ...indexErrors },
+        },
+      },
+      '/v2/resolvers/{address}': {
+        get: {
+          operationId: 'getResolver',
+          tags: ['Index'],
+          summary: 'A PermissionedResolver and who controls it',
+          description: 'Record count, default record, accounts with root roles, and roles limited to a single key, coin type, content type or interface.',
+          parameters: [nameParam('address', examples.resolver)],
+          responses: {
+            '200': { description: 'Resolver', content: json('Resolver') },
+            '404': { description: 'Not a PermissionedResolver known to the index', content: json('Error') },
+            ...indexErrors,
+          },
+        },
+      },
+      '/v2/resolvers/{address}/records': {
+        get: {
+          operationId: 'getResolverRecords',
+          tags: ['Index'],
+          summary: 'Records on a PermissionedResolver',
+          description:
+            'Each record (ids 1 to `record_count`) with its stored values and the names linked to it. Several names can share a record; names without a link read `default_record_id`. Values can lag the chain slightly; use `/n` for live values.',
+          parameters: [
+            nameParam('address', examples.resolver),
+            { name: 'limit', in: 'query', required: false, schema: { type: 'integer', minimum: 1, maximum: 500, default: 100 } },
+            { name: 'offset', in: 'query', required: false, schema: { type: 'integer', minimum: 0, default: 0 } },
+          ],
+          responses: {
+            '200': { description: 'Records', content: json('ResolverRecords') },
+            '404': { description: 'Not a PermissionedResolver known to the index', content: json('Error') },
+            ...indexErrors,
+          },
+        },
+      },
       '/health': {
         get: {
           operationId: 'getHealth', tags: ['Meta'], summary: 'RPC and indexer health', responses: { '200': { description: 'Healthy', content: json('Health') }, '503': { description: 'RPC unreachable' } } },
@@ -262,6 +316,91 @@ export function openApiSpec(config: Config, hasIndex: boolean) {
               items: { type: 'object', properties: { kind: { type: 'string' }, key: { type: 'string' }, value: { type: 'string' } } },
             },
             updated_block: { type: 'integer' },
+          },
+        },
+        Roles: {
+          type: 'object',
+          properties: {
+            roles: { type: 'array', items: { $ref: '#/components/schemas/RoleName' } },
+            admin_roles: { type: 'array', items: { $ref: '#/components/schemas/RoleName' }, description: 'Roles this account may grant and revoke' },
+            role_bitmap: { type: 'string', description: 'Raw EnhancedAccessControl bitmap (hex)' },
+          },
+        },
+        RoleName: {
+          type: 'string',
+          enum: ['set_address', 'set_text', 'set_contenthash', 'set_abi', 'set_interface', 'set_name', 'set_data', 'link', 'can_name', 'upgrade'],
+        },
+        AccountResolvers: {
+          type: 'object',
+          properties: {
+            account: { type: 'string' },
+            resolvers: {
+              type: 'array',
+              items: {
+                allOf: [
+                  { type: 'object', properties: { address: { type: 'string' }, created_block: { type: 'integer' }, record_count: { type: 'integer' } } },
+                  { $ref: '#/components/schemas/Roles' },
+                ],
+              },
+            },
+          },
+        },
+        Resolver: {
+          type: 'object',
+          properties: {
+            address: { type: 'string' },
+            created_block: { type: 'integer' },
+            record_count: { type: 'integer' },
+            default_record_id: { type: ['string', 'null'] },
+            accounts: {
+              type: 'array',
+              items: { allOf: [{ type: 'object', properties: { account: { type: 'string' } } }, { $ref: '#/components/schemas/Roles' }] },
+            },
+            key_grants: {
+              type: 'array',
+              items: {
+                allOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      account: { type: 'string' },
+                      resource: { type: 'string', description: 'keccak256 of the setter argument' },
+                      arg: { type: ['string', 'null'], description: 'Raw setter argument (hex)' },
+                      key: { type: 'string', description: 'For set_text / set_data grants' },
+                      coin_type: { type: 'string', description: 'For set_address grants' },
+                      content_type: { type: 'string', description: 'For set_abi grants' },
+                      interface_id: { type: 'string', description: 'For set_interface grants' },
+                    },
+                  },
+                  { $ref: '#/components/schemas/Roles' },
+                ],
+              },
+            },
+          },
+        },
+        ResolverRecords: {
+          type: 'object',
+          properties: {
+            resolver: { type: 'string' },
+            record_count: { type: 'integer' },
+            default_record_id: { type: ['string', 'null'], description: 'Record read by names without a link' },
+            limit: { type: 'integer' },
+            offset: { type: 'integer' },
+            records: {
+              type: 'array',
+              items: {
+                type: 'object',
+                properties: {
+                  record_id: { type: 'string' },
+                  names: { type: 'array', items: { type: 'string' }, description: 'Linked names (first 100, alphabetical)' },
+                  name_count: { type: 'integer' },
+                  records: {
+                    type: 'array',
+                    items: { type: 'object', properties: { kind: { type: 'string' }, key: { type: 'string' }, value: { type: 'string' } } },
+                  },
+                },
+              },
+            },
           },
         },
         Health: {

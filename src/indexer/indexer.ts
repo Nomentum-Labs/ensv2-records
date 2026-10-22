@@ -3,7 +3,7 @@ import type { Cache } from '../cache.js';
 import type { Config } from '../config.js';
 import { withTx, type Db } from '../db/pool.js';
 import { Applier, type DecodedLog, type Invalidations } from './apply.js';
-import { allTopics, topicsByEvent } from './events.js';
+import { allTopics, resolverBackfillTopics, topicsByEvent } from './events.js';
 
 /** Beyond this many names in one batch, skip targeted invalidation and let the TTL expire them. */
 const MAX_INVALIDATIONS = 5_000;
@@ -52,6 +52,7 @@ export class Indexer {
   /** Index until `untilBlock` (default: forever, following head). */
   async run(untilBlock?: number): Promise<void> {
     const { pollIntervalMs, confirmations } = this.o.config.indexer;
+    await this.backfillResolvers();
     while (!this.stopped) {
       const head = Number(await this.o.client.getBlockNumber()) - confirmations;
       const target = untilBlock !== undefined ? Math.min(untilBlock, head) : head;
@@ -92,10 +93,55 @@ export class Indexer {
     }
   }
 
-  private async fetchLogs(from: number, to: number): Promise<DecodedLog[]> {
+  /**
+   * One-time backfill for indexes built before resolver events were indexed: replays just those
+   * events from INDEX_START_BLOCK up to the cursor at the time of the first run, saving progress
+   * after each range. A new index has nothing to backfill (the live loop sees every event).
+   */
+  async backfillResolvers(): Promise<void> {
+    const name = 'resolvers';
+    await this.o.db.query(
+      `INSERT INTO backfill_state (chain, name, next_block, target_block) VALUES ($1, $2, $3, $4)
+       ON CONFLICT (chain, name) DO NOTHING`,
+      [this.chain, name, this.o.config.indexer.startBlock!, await this.cursor()],
+    );
+    const r = await this.o.db.query<{ next_block: string; target_block: string }>(
+      'SELECT next_block, target_block FROM backfill_state WHERE chain = $1 AND name = $2',
+      [this.chain, name],
+    );
+    let next = Number(r.rows[0]!.next_block);
+    const target = Number(r.rows[0]!.target_block);
+    if (next > target) return;
+    this.log(`backfilling resolver events ${next}-${target}`);
+    let range = this.o.config.indexer.logRange;
+    while (next <= target && !this.stopped) {
+      const to = Math.min(target, next + range - 1);
+      try {
+        const logs = await this.fetchLogs(next, to, resolverBackfillTopics);
+        await withTx(this.o.db, async (tx) => {
+          this.paths ??= await Applier.loadPaths(tx, this.o.config.indexer.rootRegistry!);
+          const applier = new Applier(tx, this.paths);
+          for (const l of logs) await applier.applyResolverBackfill(l);
+          await tx.query('UPDATE backfill_state SET next_block = $3 WHERE chain = $1 AND name = $2', [this.chain, name, to + 1]);
+        });
+        next = to + 1;
+      } catch (err) {
+        if (isRangeError(err) && range > 1) {
+          range = Math.max(1, Math.floor(range / 2));
+          continue;
+        }
+        this.paths = undefined;
+        this.log(`resolver backfill error at ${next}-${to}: ${(err as Error).message.split('\n')[0]}`);
+        await sleep(Math.min(this.o.config.indexer.pollIntervalMs, 5_000));
+      }
+    }
+    if (next > target) this.log('resolver backfill done');
+  }
+
+  private async fetchLogs(from: number, to: number, topics: `0x${string}`[] = allTopics): Promise<DecodedLog[]> {
     const raw = (await this.o.client.request({
       method: 'eth_getLogs',
-      params: [{ fromBlock: `0x${from.toString(16)}`, toBlock: `0x${to.toString(16)}`, topics: [allTopics] }],
+      params: [{ fromBlock: `0x${from.toString(16)}`, toBlock: `0x${to.toString(16)}`, topics: [topics] }],
     })) as Log[];
     const out: DecodedLog[] = [];
     for (const l of raw) {

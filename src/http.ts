@@ -23,6 +23,16 @@ function toError(err: unknown): { status: 400 | 404 | 500 | 502; error: string }
   return { status: 500, error: (err as Error)?.message?.split('\n')[0] ?? 'Internal error' };
 }
 
+const MAX_RECORDS_PAGE = 500;
+
+/** Optional integer query param within [min, max]. */
+function intParam(raw: string | undefined, name: string, fallback: number, min: number, max: number): number {
+  if (raw === undefined || raw === '') return fallback;
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < min || n > max) throw new InvalidInputError(`${name} must be an integer from ${min} to ${max}`);
+  return n;
+}
+
 /** Bulk query params: enstate uses `names[]=a&names[]=b`; also accept repeated `names=` and comma lists. */
 function bulkInputs(c: Context, param: string): string[] {
   const raw = [...(c.req.queries(`${param}[]`) ?? []), ...(c.req.queries(param) ?? [])].flatMap((v) => v.split(','));
@@ -131,6 +141,40 @@ export function createApp(deps: { profiles: ProfileService; client: PublicClient
       return c.json(e, e.status);
     }
   });
+
+  /** Runs an index query; 501 without an index, 404 when it returns null. */
+  const indexed = async (c: Context, fn: (index: IndexQueries) => Promise<unknown>) => {
+    if (!index) return c.json({ status: 501, error: 'records index not configured (DATABASE_URL)' }, 501);
+    try {
+      const out = await fn(index);
+      return out === null ? c.json({ status: 404, error: 'Not Found' }, 404) : c.json(out);
+    } catch (err) {
+      const e = toError(err);
+      return c.json(e, e.status);
+    }
+  };
+
+  /** PermissionedResolvers an account can manage (holds roles on the root resource). */
+  app.get('/v2/resolvers', (c) =>
+    indexed(c, async (ix) => {
+      const raw = c.req.query('account');
+      if (!raw) throw new InvalidInputError('account is required');
+      const account = parseAddress(raw);
+      return { account, resolvers: await ix.resolversByAccount(account) };
+    }),
+  );
+
+  /** A PermissionedResolver and the accounts holding roles on it. */
+  app.get('/v2/resolvers/:address', (c) => indexed(c, (ix) => ix.resolver(parseAddress(c.req.param('address')))));
+
+  /** Records on a PermissionedResolver and the names linked to each, paginated by record id. */
+  app.get('/v2/resolvers/:address/records', (c) =>
+    indexed(c, (ix) => {
+      const limit = intParam(c.req.query('limit'), 'limit', 100, 1, MAX_RECORDS_PAGE);
+      const offset = intParam(c.req.query('offset'), 'offset', 0, 0, Number.MAX_SAFE_INTEGER);
+      return ix.resolverRecords(parseAddress(c.req.param('address')), limit, offset);
+    }),
+  );
 
   app.notFound((c) => c.json({ status: 404, error: 'Unknown route' }, 404));
   return app;

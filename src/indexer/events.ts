@@ -23,6 +23,12 @@ export const indexedEvents = parseAbi([
   'event NameUpdated(uint256 indexed recordId, string primaryName)',
   'event ABIUpdated(uint256 indexed recordId, uint256 indexed contentType)',
   'event InterfaceUpdated(uint256 indexed recordId, bytes4 indexed interfaceId, address implementer)',
+  'event Cleared(uint256 indexed recordId)',
+  // PermissionedResolver deployment and permissions (EnhancedAccessControl). Registries emit
+  // EACRolesChanged too; it is only kept for contracts that emitted ResolverCreated.
+  'event ResolverCreated()',
+  'event EACRolesChanged(uint256 indexed resource, address indexed account, uint256 oldRoleBitmap, uint256 newRoleBitmap)',
+  'event ResourceArgument(uint256 indexed resource, bytes arg)',
   // node-keyed resolvers (PublicResolverV2 and v1-style resolvers)
   'event TextChanged(bytes32 indexed node, string indexed indexedKey, string key, string value)',
   'event AddrChanged(bytes32 indexed node, address a)',
@@ -39,3 +45,11 @@ export type IndexedEventName = (typeof indexedEvents)[number]['name'];
 
 export const topicsByEvent = new Map<string, AbiEvent>(indexedEvents.map((e) => [toEventSelector(e), e]));
 export const allTopics = [...topicsByEvent.keys()] as `0x${string}`[];
+
+/**
+ * Events replayed by the one-time resolver backfill for indexes built before they were indexed.
+ * Linked is included only to rebuild resolvers.record_count.
+ */
+export const resolverBackfillTopics = ['ResolverCreated', 'EACRolesChanged', 'ResourceArgument', 'Linked'].map((name) =>
+  toEventSelector(indexedEvents.find((e) => e.name === name)!),
+) as `0x${string}`[];

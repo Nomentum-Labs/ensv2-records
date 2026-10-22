@@ -9,6 +9,7 @@ import { keccak256, namehash, pad, toHex, zeroHash, type Hex } from 'viem';
 import { packetToBytes } from 'viem/ens';
 import { createPool, migrate, withTx, type Db } from '../../src/db/pool.js';
 import { Applier, labelKeyOf, type DecodedLog, type Paths } from '../../src/indexer/apply.js';
+import { IndexQueries } from '../../src/indexer/queries.js';
 import { IndexedKeySource } from '../../src/keys.js';
 
 const URL_ = process.env.TEST_DATABASE_URL;
@@ -18,6 +19,14 @@ const ETH = '0x00000000000000000000000000000000000000e0';
 const SUB = '0x00000000000000000000000000000000000000b0';
 const RES = '0x00000000000000000000000000000000000000c0';
 const V1 = '0x00000000000000000000000000000000000000d0';
+
+const REG = '0x00000000000000000000000000000000000000f0';
+const ALICE = '0x00000000000000000000000000000000000000a1';
+const BOB = '0x00000000000000000000000000000000000000b1';
+const NAMER = '0x00000000000000000000000000000000000000c1';
+const SET_TEXT = 1n << 4n;
+const LINK = 1n << 28n;
+const CAN_NAME = 1n << 120n;
 
 const lh = (label: string) => keccak256(toHex(label));
 const tokenId = (label: string, version = 0) => (BigInt(lh(label)) & ~0xffffffffn) | BigInt(version);
@@ -114,6 +123,90 @@ describe('indexer apply', { skip: !URL_ && 'TEST_DATABASE_URL not set' }, () => 
     assert.deepEqual(await keys.keysFor('old.eth', RES), ['default.key']); // RES's default record applies to any name on RES
     await apply(ev(V1, 'VersionChanged', { node: v1node, newVersion: 1n }));
     assert.deepEqual(await keys.keysFor('old.eth', V1), ['from.v1.resolver']);
+  });
+
+  const roles = (account: string, newRoleBitmap: bigint, resource = 0n, at = RES) =>
+    ev(at, 'EACRolesChanged', { resource, account, oldRoleBitmap: 0n, newRoleBitmap });
+  const queries = () => new IndexQueries(db, 'test');
+
+  it('resolver roles: only for known resolvers, and older events never overwrite newer ones', async () => {
+    await apply(roles(ALICE, SET_TEXT, 0n, REG)); // a registry, not a resolver
+    assert.equal((await db.query('SELECT * FROM resolver_roles')).rows.length, 0);
+
+    await apply(ev(RES, 'ResolverCreated', {}));
+    const older = roles(ALICE, SET_TEXT);
+    const newer = roles(ALICE, SET_TEXT | LINK);
+    await apply(newer, older); // backfill can replay an older event after a newer one
+    const row = (await db.query('SELECT role_bitmap::text FROM resolver_roles WHERE resolver = $1', [RES])).rows[0];
+    assert.equal(row.role_bitmap, (SET_TEXT | LINK).toString());
+
+    await apply(roles(ALICE, 0n)); // revoked
+    assert.deepEqual(await queries().resolversByAccount(ALICE), []);
+  });
+
+  it('resolver records: counts, linked names, default record, paging and Cleared', async () => {
+    await apply(
+      ev(RES, 'ResolverCreated', {}),
+      ev(RES, 'Linked', { recordId: 1n, node: namehash('dave.eth'), name: dns('dave.eth') }),
+      ev(RES, 'TextUpdated', { recordId: 1n, key: 'avatar', value: 'https://a' }),
+      ev(RES, 'Linked', { recordId: 2n, node: zeroHash, name: '0x00' as Hex }),
+      ev(RES, 'TextUpdated', { recordId: 2n, key: 'description', value: 'default' }),
+      ev(RES, 'Linked', { recordId: 1n, node: namehash('erin.eth'), name: dns('erin.eth') }), // linkToRecord
+      ev(RES, 'Linked', { recordId: 3n, node: namehash('frank.eth'), name: dns('frank.eth') }),
+      ev(RES, 'AddressUpdated', { recordId: 3n, coinType: 60n, addressBytes: '0x00000000000000000000000000000000000000AA' }),
+    );
+    const page = await queries().resolverRecords(RES, 100, 0);
+    assert.equal(page!.record_count, 3);
+    assert.equal(page!.default_record_id, '2');
+    assert.deepEqual(page!.records[0], {
+      record_id: '1',
+      names: ['dave.eth', 'erin.eth'],
+      name_count: 2,
+      records: [{ kind: 'text', key: 'avatar', value: 'https://a' }],
+    });
+    assert.deepEqual(page!.records[1]!.names, []); // the default record is linked to the root, which has no name
+    assert.deepEqual(page!.records[2]!.records, [{ kind: 'addr', key: '60', value: '0x00000000000000000000000000000000000000aa' }]);
+
+    const second = await queries().resolverRecords(RES, 1, 1);
+    assert.deepEqual(second!.records.map((r) => r.record_id), ['2']);
+
+    const inv = await apply(ev(RES, 'Cleared', { recordId: 1n }));
+    assert.deepEqual([...inv.names].sort(), ['dave.eth', 'erin.eth']);
+    assert.deepEqual((await queries().resolverRecords(RES, 1, 0))!.records[0]!.records, []);
+    assert.equal(await queries().resolverRecords(REG, 100, 0), null);
+  });
+
+  it('resolvers by account, per-key grants and the namer', async () => {
+    const twitter = BigInt(keccak256(toHex('com.twitter')));
+    await apply(
+      ev(RES, 'ResolverCreated', {}),
+      roles(NAMER, CAN_NAME),
+      roles(ALICE, SET_TEXT | LINK),
+      ev(RES, 'ResourceArgument', { resource: twitter, arg: toHex('com.twitter') }),
+      roles(BOB, SET_TEXT, twitter),
+    );
+    const mine = await queries().resolversByAccount(ALICE);
+    assert.deepEqual(mine.map((r) => [r.address, r.roles]), [[RES, ['set_text', 'link']]]);
+    assert.deepEqual(await queries().resolversByAccount(NAMER), []); // namer role only
+    assert.deepEqual(await queries().resolversByAccount(BOB), []); // per-key grant only
+
+    const info = await queries().resolver(RES);
+    assert.deepEqual(info!.accounts.map((a) => a.account).sort(), [ALICE, NAMER]);
+    assert.equal(info!.key_grants.length, 1);
+    assert.equal(info!.key_grants[0]!.account, BOB);
+    assert.equal(info!.key_grants[0]!.key, 'com.twitter');
+    assert.equal(info!.key_grants[0]!.resource, pad(toHex(twitter), { size: 32 }));
+  });
+
+  it('backfill uses Linked only for record counts', async () => {
+    await withTx(db, async (tx) => {
+      const a = new Applier(tx, paths);
+      await a.applyResolverBackfill(ev(RES, 'ResolverCreated', {}));
+      await a.applyResolverBackfill(ev(RES, 'Linked', { recordId: 5n, node: namehash('gina.eth'), name: dns('gina.eth') }));
+      await a.applyResolverBackfill(ev(RES, 'Linked', { recordId: 2n, node: namehash('hal.eth'), name: dns('hal.eth') }));
+    });
+    assert.equal((await queries().resolver(RES))!.record_count, 5);
+    assert.equal((await db.query('SELECT * FROM resolver_links')).rows.length, 0); // live links are left alone
   });
 
   it('reports which names and addresses changed', async () => {

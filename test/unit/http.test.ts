@@ -73,6 +73,12 @@ describe('http', () => {
     assert.equal(await d.text(), '<svg/>');
   });
 
+  it('index routes answer 501 without an index', async () => {
+    for (const p of ['/v2/n/a.eth', '/v2/resolvers?account=0x113A0ffeADa47e110Ad01098BEBA3403060978FB', '/v2/resolvers/0x45600dAd96384A0a2A0A9ac9287D943bcFCf3EF9/records']) {
+      assert.equal((await get(p)).status, 501, p);
+    }
+  });
+
   it('unknown routes', async () => {
     assert.deepEqual(await (await get('/nope')).json(), { status: 404, error: 'Unknown route' });
   });
@@ -90,7 +96,7 @@ describe('docs', () => {
     assert.match(page, /@scalar\/api-reference@\d+\.\d+\.\d+\/.*integrity="sha384-/s);
     const spec = (await (await get('/docs/openapi.json')).json()) as { openapi: string; paths: Record<string, unknown> };
     assert.equal(spec.openapi, '3.1.0');
-    for (const p of ['/n/{name}', '/a/{address}', '/u/{nameOrAddress}', '/bulk/n', '/bulk/a', '/bulk/u', '/i/{nameOrAddress}', '/h/{nameOrAddress}', '/v2/n/{name}', '/health', '/this']) {
+    for (const p of ['/n/{name}', '/a/{address}', '/u/{nameOrAddress}', '/bulk/n', '/bulk/a', '/bulk/u', '/i/{nameOrAddress}', '/h/{nameOrAddress}', '/v2/n/{name}', '/v2/resolvers', '/v2/resolvers/{address}', '/v2/resolvers/{address}/records', '/health', '/this']) {
       assert.ok(spec.paths[p], `missing ${p}`);
     }
   });

@@ -31,6 +31,8 @@ Routes, field names, bulk format and error bodies follow enstate.
 | `GET /i/:nameOrAddress`, `/h/:nameOrAddress` | 303 to the avatar / header image (`data:` images served inline) |
 | `GET /bulk/n?names[]=…`, `/bulk/a?addresses[]=…`, `/bulk/u?queries[]=…` | `{response_length, response: [{type:'success', …profile} \| {type:'error', status, error}]}` |
 | `GET /this`, `/health` | Version and chain / RPC health |
+| `GET /v2/n/:name` | Indexed ENSv2 registry data for a name (needs the records index) |
+| `GET /v2/resolvers?account=0x…`, `/v2/resolvers/:address`, `/v2/resolvers/:address/records` | PermissionedResolvers an account manages, a resolver's permissions, and its records with linked names (needs the records index) |
 | `GET /` → `/docs` | API reference (Scalar, pinned + SRI) rendered from `/docs/openapi.json` |
 
 Add `?fresh=true` to skip the cache read.
@@ -100,6 +102,15 @@ The UniversalResolver can return any record, but it can't tell you which text ke
 - **Keys:** after the first pass, the API asks the index for every text key set on the name's resolver (`IndexedKeySource`) and fetches those too. Values always come from the UniversalResolver, so the index only decides *which* keys to request.
 - **Cache invalidation:** each batch reports the names and addresses it touched, and the indexer deletes their `n:`/`a:` cache keys. Share `REDIS_URL` between processes, or run `MODE=all`.
 - **`GET /v2/n/:name`:** indexed registry data for a name (registry, token id, status, expiry, resolver, subregistry, record id, stored records). `/health` shows indexer lag.
+- **PermissionedResolvers** (`resolvers`, `resolver_roles`, `resolver_resource_args`):
+  - A contract counts as a resolver once it emits `ResolverCreated()`.
+  - `EACRolesChanged` is kept only for those contracts, since registries use the same access control. A role row is only overwritten by a newer event.
+  - Records are numbered from 1, and every new record is announced with `Linked`, so the highest id seen is the record count.
+  - Routes:
+    - `GET /v2/resolvers?account=0x…`: resolvers where the account holds roles on the root resource (every key). Accounts with only the namer role are left out.
+    - `GET /v2/resolvers/:address`: record count, default record, accounts with root roles, and per-key grants (decoded to the key, coin type, content type or interface id).
+    - `GET /v2/resolvers/:address/records?limit=&offset=`: each record with its stored values and the names linked to it (up to 100 per record, plus `name_count`).
+  - Indexes built before these events were added are filled in by a one-time backfill when the indexer starts (`backfill_state`). It replays only these events from `INDEX_START_BLOCK` up to the old cursor; on Sepolia it takes a few seconds.
 
 Sepolia (2026-10-21):
 - A full backfill from the v2 deploy block takes under a minute and produces about 14k labels and 8k records.

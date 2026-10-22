@@ -3,6 +3,7 @@
  *   - node = namehash(name)
  *   - resolver / subregistry match registry.getResolver(label) / getSubregistry(label)
  *   - text records stored for the name match what the UniversalResolver returns
+ *   - PermissionedResolvers: record count, the record id of linked names, and root role bitmaps
  *
  *   npm run build && node --env-file=.env dist/scripts/verify-index.js [sampleSize]
  */
@@ -10,6 +11,12 @@ import { getAddress, namehash, parseAbi, zeroAddress } from 'viem';
 import { createClient } from '../src/chain.js';
 import { loadConfig } from '../src/config.js';
 import { createPool } from '../src/db/pool.js';
+
+const resolverAbi = parseAbi([
+  'function getRecordCount() view returns (uint256)',
+  'function getRecordId(bytes32 node) view returns (uint256)',
+  'function roles(uint256 resource, address account) view returns (uint256)',
+]);
 
 const registryAbi = parseAbi([
   'function getResolver(string label) view returns (address)',
@@ -84,6 +91,55 @@ for (const r of recs) {
   }
 }
 
-console.log(JSON.stringify({ labels: rows.length, nodeBad, resolverBad, subBad, texts: recs.length, textBad }, null, 2));
+// resolvers: record counts, linked names' record ids, root roles
+const resolvers = (
+  await db.query<{ address: string; record_count: string }>('SELECT address, record_count::text FROM resolvers ORDER BY random() LIMIT $1', [sample])
+).rows;
+const links = (
+  await db.query<{ resolver: string; node: string; record_id: string }>(
+    'SELECT resolver, node, record_id::text FROM resolver_links ORDER BY random() LIMIT $1',
+    [sample],
+  )
+).rows;
+const roleRows = (
+  await db.query<{ resolver: string; account: string; role_bitmap: string }>(
+    'SELECT resolver, account, role_bitmap::text FROM resolver_roles WHERE resource = 0 ORDER BY random() LIMIT $1',
+    [sample],
+  )
+).rows;
+const resolverCalls = [
+  ...resolvers.map((r) => ({ address: getAddress(r.address), abi: resolverAbi, functionName: 'getRecordCount' as const, args: [] as const })),
+  ...links.map((l) => ({ address: getAddress(l.resolver), abi: resolverAbi, functionName: 'getRecordId' as const, args: [l.node as `0x${string}`] as const })),
+  ...roleRows.map((r) => ({ address: getAddress(r.resolver), abi: resolverAbi, functionName: 'roles' as const, args: [0n, getAddress(r.account)] as const })),
+];
+const expected = [
+  ...resolvers.map((r) => ({ what: `${r.address} record_count`, db: r.record_count })),
+  ...links.map((l) => ({ what: `${l.resolver} recordId(${l.node})`, db: l.record_id })),
+  ...roleRows.map((r) => ({ what: `${r.resolver} roles(0, ${r.account})`, db: r.role_bitmap })),
+];
+let recordsBad = 0;
+let recordsSkipped = 0;
+for (let i = 0; i < resolverCalls.length; i += 100) {
+  const res = await client.multicall({ contracts: resolverCalls.slice(i, i + 100), allowFailure: true });
+  res.forEach((r, j) => {
+    const e = expected[i + j]!;
+    if (r.status !== 'success') {
+      recordsSkipped++; // e.g. getRecordId on a v1-style resolver that also emitted Linked-shaped events
+      return;
+    }
+    if (String(r.result) !== e.db) {
+      recordsBad++;
+      mismatches.push({ field: e.what, db: e.db, chain: String(r.result) });
+    }
+  });
+}
+
+console.log(
+  JSON.stringify(
+    { labels: rows.length, nodeBad, resolverBad, subBad, texts: recs.length, textBad, resolverChecks: resolverCalls.length, recordsBad, recordsSkipped },
+    null,
+    2,
+  ),
+);
 for (const m of mismatches.slice(0, 25)) console.log(JSON.stringify(m));
 await db.end();
