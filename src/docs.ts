@@ -48,7 +48,60 @@ const freshParam = {
   description: 'Skip the cache read and resolve from chain (the result is still cached).',
   schema: { type: 'boolean' },
 };
-const json = (ref: string) => ({ 'application/json': { schema: { $ref: `#/components/schemas/${ref}` } } });
+const json = (ref: string, example?: unknown) => ({
+  'application/json': { schema: { $ref: `#/components/schemas/${ref}` }, ...(example === undefined ? {} : { example }) },
+});
+
+// Example /v2/resolvers responses, from the Sepolia index (2026-10-22)
+const ALL_ROLES = ['set_address', 'set_text', 'set_contenthash', 'set_abi', 'set_interface', 'set_name', 'set_data', 'link', 'can_name', 'upgrade'];
+const sepoliaResolverExamples = {
+  account: {
+    account: '0x03Ba34f6Ea1496fa316873CF8350A3f7eaD317EF',
+    resolvers: [
+      {
+        address: '0x45600dad96384a0a2a0a9ac9287d943bcfcf3ef9',
+        created_block: 11829264,
+        record_count: 8,
+        roles: ALL_ROLES,
+        admin_roles: ALL_ROLES,
+        role_bitmap: '0x1111111111111111111111111111111111111111111111111111111111111111',
+      },
+    ],
+  },
+  resolver: {
+    address: '0x45600dad96384a0a2a0a9ac9287d943bcfcf3ef9',
+    created_block: 11829264,
+    record_count: 8,
+    default_record_id: null,
+    accounts: [
+      {
+        account: '0x03ba34f6ea1496fa316873cf8350a3f7ead317ef',
+        roles: ALL_ROLES,
+        admin_roles: ALL_ROLES,
+        role_bitmap: '0x1111111111111111111111111111111111111111111111111111111111111111',
+      },
+    ],
+    key_grants: [
+      {
+        account: '0x69d465b8c36083a18bf574db82e6931cbd3da056',
+        roles: ['set_text'],
+        admin_roles: [],
+        role_bitmap: '0x10',
+        resource: '0xd1f86c93d831119ad98fe983e643a7431e4ac992e3ead6e3007f4dd1adf66343',
+        arg: '0x617661746172',
+        key: 'avatar',
+      },
+    ],
+  },
+  records: {
+    resolver: '0x45600dad96384a0a2a0a9ac9287d943bcfcf3ef9',
+    record_count: 8,
+    default_record_id: null,
+    limit: 1,
+    offset: 3,
+    records: [{ record_id: '4', names: ['asnalia.eth'], name_count: 1, records: [{ kind: 'text', key: 'description', value: 'asnalia.eth' }] }],
+  },
+};
 const errors = {
   '400': { description: 'Invalid name or address', content: json('Error') },
   '404': { description: 'Name has no resolver / address has no primary name', content: json('Error') },
@@ -81,6 +134,8 @@ export function openApiSpec(config: Config, hasIndex: boolean) {
           account: '0xacaedb9a293def974734b238264b941c2bacbe22',
         }
       : { name: 'vitalik.eth', address: '0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045', names: ['vitalik.eth', 'nick.eth'], resolver: undefined, account: undefined };
+  const resolverExamples = config.chain === 'sepolia' ? sepoliaResolverExamples : undefined;
+  const resolverParam = { ...nameParam('address', examples.resolver), description: 'PermissionedResolver address' };
   const indexErrors = {
     '400': { description: 'Invalid address or query parameter', content: json('Error') },
     '501': { description: 'No records index on this instance', content: json('Error') },
@@ -103,6 +158,10 @@ export function openApiSpec(config: Config, hasIndex: boolean) {
         hasIndex
           ? '- This instance has the ENSv2 records index: profiles include every text key set on the name, not just the default list.'
           : '- This instance has no records index; profiles include the default key list.',
+        '',
+        hasIndex
+          ? 'The **Index** and **Resolvers** routes (`/v2/...`) read the records index directly: registry data for a name, PermissionedResolvers and who controls them, and their records.'
+          : 'The **Index** and **Resolvers** routes (`/v2/...`) need the records index and return 501 on this instance.',
       ].join('\n'),
       license: { name: 'MIT' },
     },
@@ -112,7 +171,20 @@ export function openApiSpec(config: Config, hasIndex: boolean) {
       { name: 'Profiles', description: 'Resolve names and addresses to profiles' },
       { name: 'Bulk', description: `Up to ${config.maxBulkSize} lookups per request` },
       { name: 'Images', description: 'Avatar and header redirects' },
-      { name: 'Index', description: 'ENSv2 registry and resolver data from the records index' },
+      { name: 'Index', description: 'ENSv2 registry data for a name, from the records index' },
+      {
+        name: 'Resolvers',
+        description: [
+          'ENSv2 PermissionedResolvers, from the records index.',
+          '',
+          '- **Records** are numbered from 1 per resolver. A record is created by the first setter call for a name, and other names can be linked to an existing record (`linkToRecord` / `linkToNode`), so several names can share one record.',
+          '- Names on the resolver that aren\'t linked to a record read the **default record** (`default_record_id`, the record linked to the root node).',
+          '- **Roles** come from EnhancedAccessControl. Roles on the root resource apply to every key; a *key grant* is limited to one text/data key, coin type, ABI content type or interface. `admin_roles` are the roles an account may grant and revoke.',
+          '- Setters take the DNS-encoded name, e.g. `setText(name, key, value)`, not the namehash.',
+          '',
+          'Values can lag the chain by a few blocks; use `/n` for live record values.',
+        ].join('\n'),
+      },
       { name: 'Meta', description: 'Health and version' },
     ],
     paths: {
@@ -203,23 +275,25 @@ export function openApiSpec(config: Config, hasIndex: boolean) {
       '/v2/resolvers': {
         get: {
           operationId: 'getResolversByAccount',
-          tags: ['Index'],
+          tags: ['Resolvers'],
           summary: 'PermissionedResolvers an account can manage',
           description:
             'Resolvers where `account` holds roles on the root resource, which apply to every key. Accounts holding only the `can_name` role (the deployer\'s namer) are left out. Per-key grants are listed by `/v2/resolvers/{address}`.',
-          parameters: [{ name: 'account', in: 'query', required: true, schema: { type: 'string' }, example: examples.account }],
-          responses: { '200': { description: 'Resolvers', content: json('AccountResolvers') }, ...indexErrors },
+          parameters: [
+            { name: 'account', in: 'query', required: true, description: 'Address to list resolvers for', schema: { type: 'string' }, example: examples.account },
+          ],
+          responses: { '200': { description: 'Resolvers', content: json('AccountResolvers', resolverExamples?.account) }, ...indexErrors },
         },
       },
       '/v2/resolvers/{address}': {
         get: {
           operationId: 'getResolver',
-          tags: ['Index'],
+          tags: ['Resolvers'],
           summary: 'A PermissionedResolver and who controls it',
           description: 'Record count, default record, accounts with root roles, and roles limited to a single key, coin type, content type or interface.',
-          parameters: [nameParam('address', examples.resolver)],
+          parameters: [resolverParam],
           responses: {
-            '200': { description: 'Resolver', content: json('Resolver') },
+            '200': { description: 'Resolver', content: json('Resolver', resolverExamples?.resolver) },
             '404': { description: 'Not a PermissionedResolver known to the index', content: json('Error') },
             ...indexErrors,
           },
@@ -228,17 +302,17 @@ export function openApiSpec(config: Config, hasIndex: boolean) {
       '/v2/resolvers/{address}/records': {
         get: {
           operationId: 'getResolverRecords',
-          tags: ['Index'],
+          tags: ['Resolvers'],
           summary: 'Records on a PermissionedResolver',
           description:
             'Each record (ids 1 to `record_count`) with its stored values and the names linked to it. Several names can share a record; names without a link read `default_record_id`. Values can lag the chain slightly; use `/n` for live values.',
           parameters: [
-            nameParam('address', examples.resolver),
-            { name: 'limit', in: 'query', required: false, schema: { type: 'integer', minimum: 1, maximum: 500, default: 100 } },
-            { name: 'offset', in: 'query', required: false, schema: { type: 'integer', minimum: 0, default: 0 } },
+            resolverParam,
+            { name: 'limit', in: 'query', required: false, description: 'Records per page', schema: { type: 'integer', minimum: 1, maximum: 500, default: 100 } },
+            { name: 'offset', in: 'query', required: false, description: 'Records to skip (page through ids 1 to `record_count`)', schema: { type: 'integer', minimum: 0, default: 0 } },
           ],
           responses: {
-            '200': { description: 'Records', content: json('ResolverRecords') },
+            '200': { description: 'Records', content: json('ResolverRecords', resolverExamples?.records) },
             '404': { description: 'Not a PermissionedResolver known to the index', content: json('Error') },
             ...indexErrors,
           },
