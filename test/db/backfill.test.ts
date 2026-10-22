@@ -9,6 +9,7 @@ import { loadConfig } from '../../src/config.js';
 import { createPool, migrate, type Db } from '../../src/db/pool.js';
 import { resolverBackfillTopics } from '../../src/indexer/events.js';
 import { Indexer } from '../../src/indexer/indexer.js';
+import { IndexQueries } from '../../src/indexer/queries.js';
 
 const URL_ = process.env.TEST_DATABASE_URL;
 const RES = '0x00000000000000000000000000000000000000c0';
@@ -74,6 +75,37 @@ describe('resolver backfill', { skip: !URL_ && 'TEST_DATABASE_URL not set' }, ()
 
     await indexer.backfillResolvers(); // already done
     assert.equal(calls.length, 2);
+  });
+
+  it('sets updated_block from stored rows and fills block times', async () => {
+    await db.query("INSERT INTO resolvers (address, created_block) VALUES ($1, 120)", [RES]);
+    await db.query("INSERT INTO resolver_records (resolver, scope, kind, key, value, block, log_index) VALUES ($1, 'r:1', 'text', 'a', 'b', 150, 0)", [RES]);
+    await db.query("INSERT INTO resolver_roles (resolver, resource, account, role_bitmap, block, log_index) VALUES ($1, 0, $2, 16, 140, 0)", [RES, ALICE]);
+    let fail = true;
+    const asked: bigint[] = [];
+    const client = {
+      async getBlock({ blockNumber }: { blockNumber: bigint }) {
+        if (fail) throw new Error('rpc down');
+        asked.push(blockNumber);
+        return { timestamp: 1_800_000_000n + blockNumber };
+      },
+    } as unknown as PublicClient;
+    const indexer = new Indexer({ db, client, config, log: () => {} });
+    await indexer.refreshResolverActivity();
+    await indexer.refreshResolverActivity(); // safe to repeat
+    const row = (await db.query('SELECT created_block, updated_block FROM resolvers')).rows[0];
+    assert.deepEqual([Number(row.created_block), Number(row.updated_block)], [120, 150]);
+
+    await indexer.fillBlockTimes(); // a failed lookup is logged, not thrown
+    assert.equal((await db.query('SELECT * FROM block_times')).rows.length, 0);
+    fail = false;
+    await indexer.fillBlockTimes();
+    await indexer.fillBlockTimes([150, 151]); // only looks up blocks it doesn't have
+    assert.deepEqual(asked.map(Number).sort(), [120, 150, 151]);
+
+    const info = await new IndexQueries(db, 'sepolia').resolver(RES);
+    assert.equal(info!.created_at, new Date((1_800_000_000 + 120) * 1000).toISOString());
+    assert.equal(info!.updated_at, new Date((1_800_000_000 + 150) * 1000).toISOString());
   });
 
   it('a new index has nothing to backfill', async () => {

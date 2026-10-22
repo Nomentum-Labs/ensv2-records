@@ -24,6 +24,7 @@ function toError(err: unknown): { status: 400 | 404 | 500 | 502; error: string }
 }
 
 const MAX_RECORDS_PAGE = 500;
+const MAX_QUERY_LENGTH = 255;
 
 /** Optional integer query param within [min, max]. */
 function intParam(raw: string | undefined, name: string, fallback: number, min: number, max: number): number {
@@ -154,7 +155,7 @@ export function createApp(deps: { profiles: ProfileService; client: PublicClient
     }
   };
 
-  /** PermissionedResolvers an account can manage (holds roles on the root resource). */
+  /** PermissionedResolvers an account holds any role on (every key or a single key). */
   app.get('/v2/resolvers', (c) =>
     indexed(c, async (ix) => {
       const raw = c.req.query('account');
@@ -173,6 +174,19 @@ export function createApp(deps: { profiles: ProfileService; client: PublicClient
       const limit = intParam(c.req.query('limit'), 'limit', 100, 1, MAX_RECORDS_PAGE);
       const offset = intParam(c.req.query('offset'), 'offset', 0, 0, Number.MAX_SAFE_INTEGER);
       return ix.resolverRecords(parseAddress(c.req.param('address')), limit, offset);
+    }),
+  );
+
+  /** Names using one record (explicitly linked, plus those inheriting it when it's the default), with optional search. */
+  app.get('/v2/resolvers/:address/records/:id/names', (c) =>
+    indexed(c, (ix) => {
+      const id = c.req.param('id');
+      if (!/^[1-9]\d{0,77}$/.test(id)) throw new InvalidInputError('record id must be a positive integer');
+      const limit = intParam(c.req.query('limit'), 'limit', 100, 1, MAX_RECORDS_PAGE);
+      const offset = intParam(c.req.query('offset'), 'offset', 0, 0, Number.MAX_SAFE_INTEGER);
+      const q = c.req.query('q')?.trim() || undefined;
+      if (q && q.length > MAX_QUERY_LENGTH) throw new InvalidInputError(`q must be at most ${MAX_QUERY_LENGTH} characters`);
+      return ix.recordNames(parseAddress(c.req.param('address')), id, limit, offset, q);
     }),
   );
 

@@ -46,6 +46,7 @@ describe('indexer apply', { skip: !URL_ && 'TEST_DATABASE_URL not set' }, () => 
     withTx(db, async (tx) => {
       const a = new Applier(tx, paths);
       for (const l of logs) await a.apply(l);
+      await a.flushActivity();
       return a.inv;
     });
   const label = async (registry: string, l: string) =>
@@ -160,12 +161,18 @@ describe('indexer apply', { skip: !URL_ && 'TEST_DATABASE_URL not set' }, () => 
     assert.equal(page!.default_record_id, '2');
     assert.deepEqual(page!.records[0], {
       record_id: '1',
+      is_default: false,
       names: ['dave.eth', 'erin.eth'],
       name_count: 2,
-      records: [{ kind: 'text', key: 'avatar', value: 'https://a' }],
+      linked_name_count: 2,
+      inherited_name_count: 0,
+      records: [{ kind: 'text', key: 'avatar', value: 'https://a', encoding: 'utf8' }],
     });
+    assert.equal(page!.records[1]!.is_default, true);
     assert.deepEqual(page!.records[1]!.names, []); // the default record is linked to the root, which has no name
-    assert.deepEqual(page!.records[2]!.records, [{ kind: 'addr', key: '60', value: '0x00000000000000000000000000000000000000aa' }]);
+    assert.deepEqual(page!.records[2]!.records, [
+      { kind: 'addr', key: '60', value: '0x00000000000000000000000000000000000000aa', encoding: 'bytes', decoded: '0x00000000000000000000000000000000000000AA' },
+    ]);
 
     const second = await queries().resolverRecords(RES, 1, 1);
     assert.deepEqual(second!.records.map((r) => r.record_id), ['2']);
@@ -186,9 +193,13 @@ describe('indexer apply', { skip: !URL_ && 'TEST_DATABASE_URL not set' }, () => 
       roles(BOB, SET_TEXT, twitter),
     );
     const mine = await queries().resolversByAccount(ALICE);
-    assert.deepEqual(mine.map((r) => [r.address, r.roles]), [[RES, ['set_text', 'link']]]);
-    assert.deepEqual(await queries().resolversByAccount(NAMER), []); // namer role only
-    assert.deepEqual(await queries().resolversByAccount(BOB), []); // per-key grant only
+    assert.deepEqual(mine.map((r) => [r.address, r.roles, r.manages_records, r.key_grants]), [[RES, ['set_text', 'link'], true, []]]);
+    const namer = await queries().resolversByAccount(NAMER);
+    assert.deepEqual(namer.map((r) => [r.address, r.roles, r.manages_records]), [[RES, ['can_name'], false]]);
+    const bob = await queries().resolversByAccount(BOB); // a grant on one key only
+    assert.equal(bob.length, 1);
+    assert.deepEqual([bob[0]!.roles, bob[0]!.role_bitmap, bob[0]!.manages_records], [[], '0x0', true]);
+    assert.deepEqual(bob[0]!.key_grants.map((g) => [g.key, g.roles, g.resource]), [['com.twitter', ['set_text'], pad(toHex(twitter), { size: 32 })]]);
 
     const info = await queries().resolver(RES);
     assert.deepEqual(info!.accounts.map((a) => a.account).sort(), [ALICE, NAMER]);
@@ -196,6 +207,73 @@ describe('indexer apply', { skip: !URL_ && 'TEST_DATABASE_URL not set' }, () => 
     assert.equal(info!.key_grants[0]!.account, BOB);
     assert.equal(info!.key_grants[0]!.key, 'com.twitter');
     assert.equal(info!.key_grants[0]!.resource, pad(toHex(twitter), { size: 32 }));
+  });
+
+  it('default record: inherited names, counts, explicit links and search', async () => {
+    const past = BigInt(Math.floor(Date.now() / 1000) - 86_400);
+    const OTHER = '0x00000000000000000000000000000000000000c2';
+    await apply(register(ROOT, 'eth'), ev(ROOT, 'SubregistryUpdated', { tokenId: tokenId('eth'), subregistry: ETH }));
+    for (const l of ['alice', 'bob', 'carol', 'erin', 'frank', 'gina_x']) await apply(register(ETH, l));
+    await apply(register(ETH, 'dave', past)); // expired
+    for (const l of ['alice', 'bob', 'carol', 'dave', 'erin', 'gina_x']) await apply(ev(ETH, 'ResolverUpdated', { tokenId: tokenId(l), resolver: RES }));
+    await apply(ev(ETH, 'ResolverUpdated', { tokenId: tokenId('frank'), resolver: OTHER })); // another resolver
+    await apply(
+      ev(RES, 'ResolverCreated', {}),
+      ev(RES, 'Linked', { recordId: 1n, node: zeroHash, name: '0x00' as Hex }), // default record
+      ev(RES, 'Linked', { recordId: 2n, node: namehash('alice.eth'), name: dns('alice.eth') }),
+      ev(RES, 'Linked', { recordId: 1n, node: namehash('bob.eth'), name: dns('bob.eth') }), // explicitly linked to the default
+      ev(RES, 'Linked', { recordId: 2n, node: namehash('erin.eth'), name: dns('erin.eth') }),
+      ev(RES, 'Linked', { recordId: 0n, node: namehash('erin.eth'), name: dns('erin.eth') }), // unlinked again
+    );
+
+    const page = await queries().resolverRecords(RES, 10, 0);
+    const [def, two] = page!.records;
+    assert.deepEqual(
+      [def!.is_default, def!.names, def!.linked_name_count, def!.inherited_name_count, def!.name_count],
+      [true, ['bob.eth', 'carol.eth', 'erin.eth', 'gina_x.eth'], 1, 3, 4],
+    );
+    assert.deepEqual([two!.is_default, two!.names, two!.name_count, two!.inherited_name_count], [false, ['alice.eth'], 1, 0]);
+    assert.equal((await queries().resolver(RES))!.unlinked_name_count, 3);
+
+    const all = await queries().recordNames(RES, '1', 10, 0);
+    assert.equal(all!.total, 4);
+    assert.deepEqual(all!.names, [
+      { name: 'bob.eth', linked: true },
+      { name: 'carol.eth', linked: false },
+      { name: 'erin.eth', linked: false },
+      { name: 'gina_x.eth', linked: false },
+    ]);
+    const paged = await queries().recordNames(RES, '1', 1, 1);
+    assert.deepEqual([paged!.total, paged!.names.map((n) => n.name)], [4, ['carol.eth']]);
+    const search = await queries().recordNames(RES, '1', 10, 0, 'ER');
+    assert.deepEqual([search!.total, search!.names.map((n) => n.name)], [1, ['erin.eth']]);
+    assert.equal((await queries().recordNames(RES, '1', 10, 0, '_'))!.total, 1); // wildcards match literally
+    assert.equal((await queries().recordNames(RES, '1', 10, 0, '%'))!.total, 0);
+    const linkedOnly = await queries().recordNames(RES, '2', 10, 0);
+    assert.deepEqual([linkedOnly!.is_default, linkedOnly!.names], [false, [{ name: 'alice.eth', linked: true }]]);
+    assert.equal(await queries().recordNames(OTHER, '1', 10, 0), null);
+
+    const n = async (name: string) => {
+      const r = (await queries().name(name))!;
+      return [r.record_id, r.linked_record_id, r.uses_default];
+    };
+    assert.deepEqual(await n('carol.eth'), ['1', null, true]);
+    assert.deepEqual(await n('alice.eth'), ['2', '2', false]);
+    assert.deepEqual(await n('bob.eth'), ['1', '1', false]);
+    assert.deepEqual(await n('frank.eth'), [null, null, false]);
+  });
+
+  it('updated_block follows the latest resolver event and only moves forward', async () => {
+    const updated = async () => Number((await db.query('SELECT updated_block FROM resolvers WHERE address = $1', [RES])).rows[0].updated_block);
+    const created = ev(RES, 'ResolverCreated', {});
+    await apply(created);
+    assert.equal(await updated(), created.block);
+    const text = ev(RES, 'TextUpdated', { recordId: 1n, key: 'a', value: 'b' });
+    await apply(text, roles(ALICE, SET_TEXT, 0n, REG)); // a registry's role change isn't resolver activity
+    assert.equal(await updated(), text.block);
+    await apply({ ...ev(RES, 'Linked', { recordId: 1n, node: namehash('x.eth'), name: dns('x.eth') }), block: 1 }); // replayed older event
+    assert.equal(await updated(), text.block);
+    assert.equal((await db.query('SELECT * FROM resolvers WHERE address = $1', [REG])).rows.length, 0);
   });
 
   it('backfill uses Linked only for record counts', async () => {

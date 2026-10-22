@@ -59,15 +59,17 @@ These read the records index directly and return 501 on an instance without one.
 
 | Route | |
 |---|---|
-| `GET /v2/n/:name` | ENSv2 registry data for a name: registry, token id, status, expiry, resolver, subregistry, record id and stored records |
-| `GET /v2/resolvers?account=0x…` | PermissionedResolvers the account can manage (holds roles on the root resource, which covers every key) |
-| `GET /v2/resolvers/:address` | A PermissionedResolver's record count, default record, accounts with root roles, and per-key grants |
-| `GET /v2/resolvers/:address/records?limit=&offset=` | The resolver's records, each with its stored values and the names linked to it (up to 100 names per record, plus `name_count`) |
+| `GET /v2/n/:name` | ENSv2 registry data for a name: registry, token id, status, expiry, resolver, subregistry, stored records, the record it reads (`record_id`), and whether that's its own link (`linked_record_id`) or the default (`uses_default`) |
+| `GET /v2/resolvers?account=0x…` | PermissionedResolvers the account has any role on: `roles` for every key, `key_grants` for single keys, and `manages_records` |
+| `GET /v2/resolvers/:address` | A PermissionedResolver's record count, default record, created/updated block and time, `unlinked_name_count`, accounts with root roles, and per-key grants |
+| `GET /v2/resolvers/:address/records?limit=&offset=` | The resolver's records, each with its stored values and the names using it (up to 100, plus `linked_name_count`, `inherited_name_count` and `name_count`) |
+| `GET /v2/resolvers/:address/records/:id/names?q=&limit=&offset=` | Every name using one record, alphabetical, with an exact `total`. `linked: false` marks names inheriting the default record. `q` is a case-insensitive substring search |
 
 How PermissionedResolver records work:
 - Records are numbered from 1 per resolver. A setter call for a name without a record creates one, and other names can be linked to an existing record (`linkToRecord` / `linkToNode`), so several names can share one record.
-- Names on the resolver that aren't linked to a record read the default record (`default_record_id`, the record linked to the root node).
-- Roles come from EnhancedAccessControl. Roles on the root resource apply to every key; a key grant is limited to one text/data key, coin type, ABI content type or interface. `admin_roles` are the roles an account may grant and revoke. Accounts holding only the deployer's `can_name` role are left out of `/v2/resolvers?account=`.
+- Names on the resolver that aren't linked to a record read the default record (`default_record_id`, the record linked to the root node). The default record's counts include these inherited names: names whose resolver is set to this one in the ENSv2 registry, registered and not expired, with no link of their own.
+- Stored values carry an `encoding`: `utf8` for text and name, `bytes` for addr, contenthash and data (raw hex as stored on chain), `address` for interface implementers, and `flag` for abi (only whether an ABI is set is indexed). Addresses and contenthashes also come with `decoded`, in the chain's own address format or as a URI such as `ipfs://…`.
+- Roles come from EnhancedAccessControl. Roles on the root resource apply to every key; a key grant is limited to one text/data key, coin type, ABI content type or interface. `admin_roles` are the roles an account may grant and revoke. `manages_records` is false for an account whose only role is the deployer's `can_name`.
 - Setters take the DNS-encoded name, e.g. `setText(name, key, value)`, not the namehash.
 
 ### Meta
@@ -125,6 +127,7 @@ The UniversalResolver can return any record, but it can't tell you which text ke
   - A contract counts as a resolver once it emits `ResolverCreated()`.
   - `EACRolesChanged` is kept only for those contracts, since registries use the same access control. A role row is only overwritten by a newer event.
   - Records are numbered from 1, and every new record is announced with `Linked`, so the highest id seen is the record count.
+  - `updated_block` is the latest block with a record, link, role or key-grant event on the resolver. Timestamps for created/updated blocks are looked up once and stored in `block_times`.
 - **Keys:** after the first pass, the API asks the index for every text key set on the name's resolver (`IndexedKeySource`) and fetches those too. Values always come from the UniversalResolver, so the index only decides *which* keys to request.
 - **Cache invalidation:** each batch reports the names and addresses it touched, and the indexer deletes their `n:`/`a:` cache keys. Share `REDIS_URL` between processes, or run `MODE=all`.
 - **Migrations** run automatically at startup. When an upgrade indexes events an existing index never read, the indexer fills them in with a one-time backfill (progress in `backfill_state`) before following the chain; existing data is left in place.
@@ -133,6 +136,7 @@ Sepolia presets (`ROOT_REGISTRY`, `INDEX_START_BLOCK`, `ENSV1_RESOLVER`) are bui
 
 Known limits:
 - Reorgs deeper than `CONFIRMATIONS` (default 0) aren't rolled back. A reorged tip block can leave stale index rows until those names change again; profile values still come live from the UniversalResolver.
+- Names in the ENSv1 registry that point at a PermissionedResolver only count towards its records once they link to one; inheriting the default record is tracked for ENSv2 registry names only.
 - v1 names only get keys set after the v2 start block. The full v1 history isn't indexed, so v1 names mostly rely on the default key list.
 - Offchain names can't be indexed.
 
@@ -184,7 +188,7 @@ node --env-file=.env dist/scripts/verify-index.js 300     # compare a random sam
 npm run compare -- --ours http://localhost:3000 --theirs https://ens.ethfollow.xyz names.txt   # compare profiles with enstate
 ```
 
-`verify-index` checks nodes, resolvers, subregistries and text records for sampled names, plus record counts, record ids and root roles for sampled PermissionedResolvers. The last Sepolia run (2026-10-22) found no mismatches across 300 names, 300 text records and 900 resolver checks.
+`verify-index` checks nodes, resolvers, subregistries and text records for sampled names, plus record counts, record ids, root roles and unlinked (default-inheriting) names for sampled PermissionedResolvers. The last Sepolia run (2026-10-22) found no mismatches across 300 names, 300 text records and 968 resolver checks.
 
 ## Roadmap
 

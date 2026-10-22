@@ -3,6 +3,7 @@ import { describe, it } from 'node:test';
 import type { PublicClient } from 'viem';
 import { loadConfig } from '../../src/config.js';
 import { createApp } from '../../src/http.js';
+import type { IndexQueries } from '../../src/indexer/queries.js';
 import type { Profile, ProfileService } from '../../src/profile.js';
 import { NotFoundError } from '../../src/resolve/forward.js';
 
@@ -74,9 +75,27 @@ describe('http', () => {
   });
 
   it('index routes answer 501 without an index', async () => {
-    for (const p of ['/v2/n/a.eth', '/v2/resolvers?account=0x113A0ffeADa47e110Ad01098BEBA3403060978FB', '/v2/resolvers/0x45600dAd96384A0a2A0A9ac9287D943bcFCf3EF9/records']) {
+    for (const p of ['/v2/n/a.eth', '/v2/resolvers?account=0x113A0ffeADa47e110Ad01098BEBA3403060978FB', '/v2/resolvers/0x45600dAd96384A0a2A0A9ac9287D943bcFCf3EF9/records', '/v2/resolvers/0x45600dAd96384A0a2A0A9ac9287D943bcFCf3EF9/records/1/names']) {
       assert.equal((await get(p)).status, 501, p);
     }
+  });
+
+  it('record names: validates the id, paging and search', async () => {
+    const calls: unknown[][] = [];
+    const index = {
+      async recordNames(...args: unknown[]) {
+        calls.push(args);
+        return args[0] === '0x0000000000000000000000000000000000000001' ? null : { names: [] };
+      },
+    } as unknown as IndexQueries;
+    const withIndex = createApp({ profiles: fake, client: {} as PublicClient, config, index });
+    const base = '/v2/resolvers/0x45600dAd96384A0a2A0A9ac9287D943bcFCf3EF9/records';
+    assert.equal((await withIndex.request(`${base}/2/names?limit=5&offset=10&q=%20Ali%20`)).status, 200);
+    assert.deepEqual(calls[0], ['0x45600dAd96384A0a2A0A9ac9287D943bcFCf3EF9', '2', 5, 10, 'Ali']);
+    for (const bad of ['0/names', 'x/names', '1/names?limit=0', `1/names?q=${'a'.repeat(256)}`]) {
+      assert.equal((await withIndex.request(`${base}/${bad}`)).status, 400, bad);
+    }
+    assert.equal((await withIndex.request('/v2/resolvers/0x0000000000000000000000000000000000000001/records/1/names')).status, 404);
   });
 
   it('unknown routes', async () => {
@@ -96,7 +115,7 @@ describe('docs', () => {
     assert.match(page, /@scalar\/api-reference@\d+\.\d+\.\d+\/.*integrity="sha384-/s);
     const spec = (await (await get('/docs/openapi.json')).json()) as { openapi: string; paths: Record<string, unknown> };
     assert.equal(spec.openapi, '3.1.0');
-    for (const p of ['/n/{name}', '/a/{address}', '/u/{nameOrAddress}', '/bulk/n', '/bulk/a', '/bulk/u', '/i/{nameOrAddress}', '/h/{nameOrAddress}', '/v2/n/{name}', '/v2/resolvers', '/v2/resolvers/{address}', '/v2/resolvers/{address}/records', '/health', '/this']) {
+    for (const p of ['/n/{name}', '/a/{address}', '/u/{nameOrAddress}', '/bulk/n', '/bulk/a', '/bulk/u', '/i/{nameOrAddress}', '/h/{nameOrAddress}', '/v2/n/{name}', '/v2/resolvers', '/v2/resolvers/{address}', '/v2/resolvers/{address}/records', '/v2/resolvers/{address}/records/{id}/names', '/health', '/this']) {
       assert.ok(spec.paths[p], `missing ${p}`);
     }
   });

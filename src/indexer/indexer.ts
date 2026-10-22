@@ -7,6 +7,8 @@ import { allTopics, resolverBackfillTopics, topicsByEvent } from './events.js';
 
 /** Beyond this many names in one batch, skip targeted invalidation and let the TTL expire them. */
 const MAX_INVALIDATIONS = 5_000;
+/** Concurrent getBlock calls when filling block_times. */
+const BLOCK_TIME_BATCH = 10;
 
 export type IndexerOptions = {
   db: Db;
@@ -53,7 +55,10 @@ export class Indexer {
   async run(untilBlock?: number): Promise<void> {
     const { pollIntervalMs, confirmations } = this.o.config.indexer;
     await this.backfillResolvers();
+    await this.refreshResolverActivity();
+    await this.fillBlockTimes();
     while (!this.stopped) {
+      if (this.blockTimesPending) await this.fillBlockTimes();
       const head = Number(await this.o.client.getBlockNumber()) - confirmations;
       const target = untilBlock !== undefined ? Math.min(untilBlock, head) : head;
       const from = (await this.cursor()) + 1;
@@ -81,8 +86,9 @@ export class Indexer {
           }
           throw err;
         }
-        const inv = await this.applyRange(from, to, logs);
+        const { inv, blocks } = await this.applyRange(from, to, logs);
         await this.invalidate(inv);
+        if (blocks.length) await this.fillBlockTimes(blocks);
         if (logs.length) this.log(`${from}-${to}: ${logs.length} logs, ${inv.names.size} names touched (head-${confirmations}=${head})`);
         if (this.range < this.o.config.indexer.logRange) this.range = Math.min(this.o.config.indexer.logRange, this.range * 2);
       } catch (err) {
@@ -122,6 +128,7 @@ export class Indexer {
           this.paths ??= await Applier.loadPaths(tx, this.o.config.indexer.rootRegistry!);
           const applier = new Applier(tx, this.paths);
           for (const l of logs) await applier.applyResolverBackfill(l);
+          await applier.flushActivity();
           await tx.query('UPDATE backfill_state SET next_block = $3 WHERE chain = $1 AND name = $2', [this.chain, name, to + 1]);
         });
         next = to + 1;
@@ -136,6 +143,58 @@ export class Indexer {
       }
     }
     if (next > target) this.log('resolver backfill done');
+  }
+
+  /**
+   * Sets resolvers.updated_block from the records, links and roles already stored, for resolvers
+   * indexed before updated_block existed. Only ever raises it, so it is safe on every start.
+   */
+  async refreshResolverActivity(): Promise<void> {
+    await this.o.db.query(
+      `UPDATE resolvers v SET updated_block = x.latest
+       FROM (
+         SELECT address, GREATEST(
+           updated_block, created_block,
+           COALESCE((SELECT max(block) FROM resolver_records WHERE resolver = r.address), 0),
+           COALESCE((SELECT max(block) FROM resolver_links WHERE resolver = r.address), 0),
+           COALESCE((SELECT max(block) FROM resolver_roles WHERE resolver = r.address), 0)) AS latest
+         FROM resolvers r
+       ) x
+       WHERE v.address = x.address AND x.latest > v.updated_block`,
+    );
+  }
+
+  private blockTimesPending = false;
+
+  /**
+   * Stores timestamps for `blocks`, or (no argument) for every resolver block that has none yet.
+   * Failures are logged and retried on the next loop; they never hold up indexing.
+   */
+  async fillBlockTimes(blocks?: number[]): Promise<void> {
+    try {
+      const r = blocks
+        ? await this.o.db.query<{ block: string }>(
+            'SELECT b AS block FROM unnest($1::bigint[]) AS b WHERE NOT EXISTS (SELECT 1 FROM block_times t WHERE t.block = b)',
+            [blocks],
+          )
+        : await this.o.db.query<{ block: string }>(
+            `SELECT b AS block FROM (SELECT created_block AS b FROM resolvers UNION SELECT updated_block FROM resolvers) x
+             WHERE NOT EXISTS (SELECT 1 FROM block_times t WHERE t.block = x.b)`,
+          );
+      const todo = r.rows.map((row) => Number(row.block));
+      for (let i = 0; i < todo.length; i += BLOCK_TIME_BATCH) {
+        const chunk = todo.slice(i, i + BLOCK_TIME_BATCH);
+        const times = await Promise.all(chunk.map(async (b) => (await this.o.client.getBlock({ blockNumber: BigInt(b) })).timestamp));
+        await this.o.db.query(
+          `INSERT INTO block_times (block, timestamp) SELECT * FROM unnest($1::bigint[], $2::bigint[]) ON CONFLICT (block) DO NOTHING`,
+          [chunk, times.map(String)],
+        );
+      }
+      this.blockTimesPending = false;
+    } catch (err) {
+      this.blockTimesPending = true;
+      this.log(`block times: ${(err as Error).message.split('\n')[0]}`);
+    }
   }
 
   private async fetchLogs(from: number, to: number, topics: `0x${string}`[] = allTopics): Promise<DecodedLog[]> {
@@ -165,17 +224,18 @@ export class Indexer {
     return out.sort((a, b) => a.block - b.block || a.logIndex - b.logIndex);
   }
 
-  private async applyRange(from: number, to: number, logs: DecodedLog[]): Promise<Invalidations> {
+  private async applyRange(from: number, to: number, logs: DecodedLog[]): Promise<{ inv: Invalidations; blocks: number[] }> {
     return withTx(this.o.db, async (tx) => {
       this.paths ??= await Applier.loadPaths(tx, this.o.config.indexer.rootRegistry!);
       const applier = new Applier(tx, this.paths);
       for (const l of logs) await applier.apply(l);
+      const blocks = await applier.flushActivity();
       await tx.query(
         `INSERT INTO indexer_state (chain, last_block, updated_at) VALUES ($1, $2, now())
          ON CONFLICT (chain) DO UPDATE SET last_block = EXCLUDED.last_block, updated_at = now()`,
         [this.chain, to],
       );
-      return applier.inv;
+      return { inv: applier.inv, blocks };
     });
   }
 

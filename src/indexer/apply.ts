@@ -45,6 +45,8 @@ export type Paths = { root: string; byRegistry: Map<string, Path> };
  */
 export class Applier {
   readonly inv: Invalidations = { names: new Set(), addresses: new Set() };
+  /** Highest block per emitter for PermissionedResolver events, written by flushActivity. */
+  private readonly activity = new Map<string, number>();
 
   constructor(
     private readonly tx: Tx,
@@ -74,6 +76,7 @@ export class Applier {
 
   async apply(log: DecodedLog): Promise<void> {
     const a = log.args;
+    if (RESOLVER_ACTIVITY.has(log.eventName)) this.touch(log);
     switch (log.eventName) {
       case 'LabelRegistered':
       case 'LabelReserved':
@@ -279,6 +282,7 @@ export class Applier {
    * record counts. Every write here is safe to apply out of order or twice.
    */
   async applyResolverBackfill(log: DecodedLog): Promise<void> {
+    this.touch(log);
     if (log.eventName === 'Linked') return this.bumpRecordCount(log.address, log.args.recordId as bigint);
     return this.applyResolverEvent(log);
   }
@@ -311,6 +315,28 @@ export class Applier {
         );
         return;
     }
+  }
+
+  private touch(log: DecodedLog) {
+    if ((this.activity.get(log.address) ?? -1) < log.block) this.activity.set(log.address, log.block);
+  }
+
+  /**
+   * Raises resolvers.updated_block for the PermissionedResolvers that had events in this batch
+   * (other emitters have no resolvers row and are skipped). Call once per batch, after the logs.
+   * Returns the blocks the touched resolvers now point at, for block_times.
+   */
+  async flushActivity(): Promise<number[]> {
+    if (!this.activity.size) return [];
+    const r = await this.tx.query<{ created_block: string; updated_block: string }>(
+      `UPDATE resolvers v SET updated_block = GREATEST(v.updated_block, v.created_block, t.block)
+       FROM unnest($1::text[], $2::bigint[]) AS t(address, block)
+       WHERE v.address = t.address
+       RETURNING v.created_block, v.updated_block`,
+      [[...this.activity.keys()], [...this.activity.values()]],
+    );
+    this.activity.clear();
+    return [...new Set(r.rows.flatMap((row) => [Number(row.created_block), Number(row.updated_block)]))];
   }
 
   private async isResolver(address: string): Promise<boolean> {
@@ -368,6 +394,22 @@ export class Applier {
     if (r.rows[0]) this.inv.addresses.add(r.rows[0].address);
   }
 }
+
+/** PermissionedResolver events that count as a change to the resolver (resolvers.updated_block). */
+const RESOLVER_ACTIVITY = new Set([
+  'ResolverCreated',
+  'EACRolesChanged',
+  'ResourceArgument',
+  'Linked',
+  'Cleared',
+  'TextUpdated',
+  'AddressUpdated',
+  'ContenthashUpdated',
+  'DataUpdated',
+  'NameUpdated',
+  'ABIUpdated',
+  'InterfaceUpdated',
+]);
 
 const emptyBytesToNull = (v: unknown) => (typeof v === 'string' && v !== '0x' ? v.toLowerCase() : null);
 

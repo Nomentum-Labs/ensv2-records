@@ -3,7 +3,8 @@
  *   - node = namehash(name)
  *   - resolver / subregistry match registry.getResolver(label) / getSubregistry(label)
  *   - text records stored for the name match what the UniversalResolver returns
- *   - PermissionedResolvers: record count, the record id of linked names, and root role bitmaps
+ *   - PermissionedResolvers: record count, the record id of linked names, root role bitmaps, and
+ *     that names counted as inheriting the default record have no link of their own (record id 0)
  *
  *   npm run build && node --env-file=.env dist/scripts/verify-index.js [sampleSize]
  */
@@ -107,15 +108,27 @@ const roleRows = (
     [sample],
   )
 ).rows;
+// names the index counts as inheriting the default record: on chain their own record id is 0
+const unlinked = (
+  await db.query<{ resolver: string; node: string }>(
+    `SELECT l.resolver, l.node FROM registry_labels l JOIN resolvers v ON v.address = l.resolver
+     WHERE l.name IS NOT NULL AND l.status = 'registered' AND l.expiry > $1
+       AND NOT EXISTS (SELECT 1 FROM resolver_links k WHERE k.resolver = l.resolver AND k.node = l.node AND k.record_id <> 0)
+     ORDER BY random() LIMIT $2`,
+    [now + 3600, sample],
+  )
+).rows;
 const resolverCalls = [
   ...resolvers.map((r) => ({ address: getAddress(r.address), abi: resolverAbi, functionName: 'getRecordCount' as const, args: [] as const })),
   ...links.map((l) => ({ address: getAddress(l.resolver), abi: resolverAbi, functionName: 'getRecordId' as const, args: [l.node as `0x${string}`] as const })),
   ...roleRows.map((r) => ({ address: getAddress(r.resolver), abi: resolverAbi, functionName: 'roles' as const, args: [0n, getAddress(r.account)] as const })),
+  ...unlinked.map((u) => ({ address: getAddress(u.resolver), abi: resolverAbi, functionName: 'getRecordId' as const, args: [u.node as `0x${string}`] as const })),
 ];
 const expected = [
   ...resolvers.map((r) => ({ what: `${r.address} record_count`, db: r.record_count })),
   ...links.map((l) => ({ what: `${l.resolver} recordId(${l.node})`, db: l.record_id })),
   ...roleRows.map((r) => ({ what: `${r.resolver} roles(0, ${r.account})`, db: r.role_bitmap })),
+  ...unlinked.map((u) => ({ what: `${u.resolver} unlinked recordId(${u.node})`, db: '0' })),
 ];
 let recordsBad = 0;
 let recordsSkipped = 0;
