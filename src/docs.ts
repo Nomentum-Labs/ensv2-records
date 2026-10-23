@@ -123,6 +123,7 @@ const sepoliaResolverExamples = {
         names: ['$hila.eth'],
         name_count: 1,
         linked_name_count: 1,
+        unregistered_link_count: 0,
         inherited_name_count: 0,
         records: [
           { kind: 'addr', key: '60', value: '0xc983ebc9db969782d994627bdffec0ae6efee1b3', encoding: 'bytes', decoded: '0xC983Ebc9dB969782D994627bdfFeC0ae6efee1b3' },
@@ -137,6 +138,7 @@ const sepoliaResolverExamples = {
         names: ['$khjkjnkjljoiu909.eth', '0000000000000000000000000000000000000000.eth', 'defaultname.eth', 'redesigned.eth', 'registration.eth'],
         name_count: 5,
         linked_name_count: 0,
+        unregistered_link_count: 0,
         inherited_name_count: 5,
         records: [
           { kind: 'text', key: 'description', value: 'Just a default description', encoding: 'utf8' },
@@ -155,8 +157,8 @@ const sepoliaResolverExamples = {
     limit: 100,
     offset: 0,
     names: [
-      { name: 'redesigned.eth', linked: false },
-      { name: 'registration.eth', linked: false },
+      { name: 'redesigned.eth', linked: false, registered: true },
+      { name: 'registration.eth', linked: false, registered: true },
     ],
   },
 };
@@ -384,13 +386,20 @@ export function openApiSpec(config: Config, hasIndex: boolean) {
           tags: ['Resolvers'],
           summary: 'Names using a record',
           description:
-            'Names linked to the record, plus, when it is the default record, names inheriting it (`linked: false`). Alphabetical; `total` counts every match. Use `q` to check whether a name uses this record.',
+            'Names linked to the record, plus, when it is the default record, names inheriting it (`linked: false`). Alphabetical; `total` counts every match. Use `q` to check whether a name uses this record. Links to names that are not registered (or have expired), such as placeholders apps link to create a record, are left out unless `include_unregistered=true`.',
           parameters: [
             resolverParam,
             { name: 'id', in: 'path', required: true, description: 'Record id (1 to `record_count`)', schema: { type: 'string', pattern: '^[1-9][0-9]*$' }, example: resolverExamples ? '3' : undefined },
             { name: 'q', in: 'query', required: false, description: 'Case-insensitive substring of the name (up to 255 characters)', schema: { type: 'string' }, example: resolverExamples ? 're' : undefined },
             { name: 'limit', in: 'query', required: false, description: 'Names per page', schema: { type: 'integer', minimum: 1, maximum: 500, default: 100 } },
             { name: 'offset', in: 'query', required: false, description: 'Names to skip', schema: { type: 'integer', minimum: 0, default: 0 } },
+            {
+              name: 'include_unregistered',
+              in: 'query',
+              required: false,
+              description: 'Also return links to names that are not registered or have expired (`registered: false`)',
+              schema: { type: 'boolean', default: false },
+            },
           ],
           responses: {
             '200': { description: 'Names', content: json('RecordNames', resolverExamples?.names) },
@@ -527,7 +536,11 @@ export function openApiSpec(config: Config, hasIndex: boolean) {
               type: 'array',
               items: {
                 type: 'object',
-                properties: { name: { type: 'string' }, linked: { type: 'boolean', description: 'False when the name inherits the default record' } },
+                properties: {
+                  name: { type: 'string' },
+                  linked: { type: 'boolean', description: 'False when the name inherits the default record' },
+                  registered: { type: 'boolean', description: 'False for a link to a name that is not registered or has expired (only with include_unregistered)' },
+                },
               },
             },
           },
@@ -603,7 +616,11 @@ export function openApiSpec(config: Config, hasIndex: boolean) {
                   is_default: { type: 'boolean' },
                   names: { type: 'array', items: { type: 'string' }, description: 'Names using the record (first 100, alphabetical)' },
                   name_count: { type: 'integer', description: 'linked_name_count + inherited_name_count' },
-                  linked_name_count: { type: 'integer', description: 'Names explicitly linked to the record' },
+                  linked_name_count: { type: 'integer', description: 'Registered, unexpired names explicitly linked to the record' },
+                  unregistered_link_count: {
+                    type: 'integer',
+                    description: 'Links to names that are not registered or have expired (e.g. app placeholders); not in names or name_count',
+                  },
                   inherited_name_count: { type: 'integer', description: 'Default record only: names with no link of their own' },
                   records: { type: 'array', items: { $ref: '#/components/schemas/RecordValue' } },
                 },

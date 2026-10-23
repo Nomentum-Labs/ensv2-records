@@ -50,8 +50,10 @@ export type ResolverRecords = {
     names: string[];
     /** linked_name_count + inherited_name_count. */
     name_count: number;
-    /** Names explicitly linked to this record. */
+    /** Registered, unexpired names explicitly linked to this record. */
     linked_name_count: number;
+    /** Links to names that aren't registered (or have expired), e.g. app placeholders like `<id>.grails-config.invalid`. Not in names or counts. */
+    unregistered_link_count: number;
     /** Default record only: names on this resolver with no link of their own (registered, not expired). */
     inherited_name_count: number;
     records: RecordValue[];
@@ -66,8 +68,11 @@ export type RecordNames = {
   total: number;
   limit: number;
   offset: number;
-  /** linked = false: the name has no link of its own and inherits the default record. */
-  names: { name: string; linked: boolean }[];
+  /**
+   * linked = false: the name has no link of its own and inherits the default record.
+   * registered = false: a link to a name that isn't registered or has expired (only with include_unregistered).
+   */
+  names: { name: string; linked: boolean; registered: boolean }[];
 };
 
 export type KeyRoles = DecodedRoles & { resource: Hex; arg: Hex | null } & GrantArgument;
@@ -107,9 +112,19 @@ const unlinkedNames = (resolver: string, now: string) => `
   WHERE l.resolver = ${resolver} AND l.name IS NOT NULL AND l.status = 'registered' AND l.expiry > ${now}
     AND NOT EXISTS (SELECT 1 FROM resolver_links k WHERE k.resolver = ${resolver} AND k.node = l.node AND k.record_id <> 0)`;
 
-/** Names explicitly linked to a record (the root link of the default record has no name). Columns: name. */
-const linkedNames = (resolver: string, recordId: string) => `
-  SELECT name FROM resolver_links WHERE resolver = ${resolver} AND record_id = ${recordId} AND node <> '${zeroHash}' AND name IS NOT NULL`;
+/** True when `node` is a registered name that hasn't expired at `now`. */
+const isRegistered = (node: string, now: string) => `
+  EXISTS (SELECT 1 FROM registry_labels l WHERE l.node = ${node} AND l.status = 'registered' AND l.expiry > ${now})`;
+
+/**
+ * Names explicitly linked to a record (the root link of the default record has no name), and whether
+ * each is a registered name. Links can point at any name, including ones that can never be
+ * registered (apps link placeholders such as `<id>.grails-config.invalid` to create records).
+ * Columns: name, registered.
+ */
+const linkedNames = (resolver: string, recordId: string, now: string) => `
+  SELECT k.name, ${isRegistered('k.node', now)} AS registered FROM resolver_links k
+  WHERE k.resolver = ${resolver} AND k.record_id = ${recordId} AND k.node <> '${zeroHash}' AND k.name IS NOT NULL`;
 
 const SUMMARY = `
   SELECT v.address, v.created_block, GREATEST(v.created_block, v.updated_block) AS updated_block, v.record_count::text,
@@ -236,14 +251,19 @@ export class IndexQueries {
        ORDER BY kind, key`,
       [address, ids.map((id) => `r:${id}`)],
     );
-    const links = await this.db.query<{ record_id: string; name: string; name_count: string }>(
-      `SELECT record_id, name, name_count FROM (
-         SELECT record_id::text, name, count(*) OVER (PARTITION BY record_id) AS name_count,
-                row_number() OVER (PARTITION BY record_id ORDER BY name) AS n
-         FROM resolver_links
-         WHERE resolver = $1 AND record_id = ANY($2::numeric[]) AND node <> $4 AND name IS NOT NULL
+    // every record with links returns at least one row (registered or not), carrying both counts
+    const links = await this.db.query<{ record_id: string; name: string; registered: boolean; name_count: string; unregistered_count: string }>(
+      `SELECT record_id, name, registered, name_count, unregistered_count FROM (
+         SELECT record_id::text, name, registered,
+                count(*) FILTER (WHERE registered) OVER (PARTITION BY record_id) AS name_count,
+                count(*) FILTER (WHERE NOT registered) OVER (PARTITION BY record_id) AS unregistered_count,
+                row_number() OVER (PARTITION BY record_id, registered ORDER BY name) AS n
+         FROM (
+           SELECT k.record_id, k.name, ${isRegistered('k.node', '$5')} AS registered FROM resolver_links k
+           WHERE k.resolver = $1 AND k.record_id = ANY($2::numeric[]) AND k.node <> $4 AND k.name IS NOT NULL
+         ) k
        ) l WHERE n <= $3`,
-      [address, ids, NAMES_PER_RECORD, zeroHash],
+      [address, ids, NAMES_PER_RECORD, zeroHash, nowSeconds()],
     );
 
     const byId = new Map(
@@ -255,6 +275,7 @@ export class IndexQueries {
           names: [] as string[],
           name_count: 0,
           linked_name_count: 0,
+          unregistered_link_count: 0,
           inherited_name_count: 0,
           records: [] as RecordValue[],
         },
@@ -264,8 +285,9 @@ export class IndexQueries {
     for (const l of links.rows) {
       const rec = byId.get(l.record_id);
       if (!rec) continue;
-      rec.names.push(l.name);
+      if (l.registered) rec.names.push(l.name);
       rec.linked_name_count = Number(l.name_count);
+      rec.unregistered_link_count = Number(l.unregistered_count);
     }
     const def = defaultId ? byId.get(defaultId) : undefined;
     if (def) {
@@ -279,29 +301,43 @@ export class IndexQueries {
   }
 
   /** Names using one record of a PermissionedResolver, alphabetical. Null if not a known resolver. */
-  async recordNames(resolver: string, recordId: string, limit: number, offset: number, q?: string): Promise<RecordNames | null> {
+  async recordNames(
+    resolver: string,
+    recordId: string,
+    limit: number,
+    offset: number,
+    q?: string,
+    includeUnregistered = false,
+  ): Promise<RecordNames | null> {
     const address = resolver.toLowerCase();
     if (!(await this.summaries([address])).has(address)) return null;
     const isDefault = (await this.defaultRecordId(address)) === recordId;
-    const page = await this.namesPage(address, recordId, isDefault, limit, offset, q);
+    const page = await this.namesPage(address, recordId, isDefault, limit, offset, q, includeUnregistered);
     return { resolver: address, record_id: recordId, is_default: isDefault, total: page.total, limit, offset, names: page.names };
   }
 
-  private async namesPage(address: string, recordId: string, isDefault: boolean, limit: number, offset: number, q?: string) {
-    // $1 resolver, $2 record id, $3 search pattern or null, $4 now (default record only)
-    const params: unknown[] = [address, recordId, q ? likeContains(q.toLowerCase()) : null];
-    if (isDefault) params.push(nowSeconds());
+  private async namesPage(
+    address: string,
+    recordId: string,
+    isDefault: boolean,
+    limit: number,
+    offset: number,
+    q?: string,
+    includeUnregistered = false,
+  ) {
+    // $1 resolver, $2 record id, $3 search pattern or null, $4 now, $5 include unregistered links
+    const params: unknown[] = [address, recordId, q ? likeContains(q.toLowerCase()) : null, nowSeconds(), includeUnregistered];
     const names = `
-      SELECT name, true AS linked FROM (${linkedNames('$1', '$2')}) k
-      ${isDefault ? `UNION ALL SELECT name, false FROM (${unlinkedNames('$1', '$4')}) u` : ''}`;
-    const where = 'WHERE $3::text IS NULL OR name LIKE $3';
+      SELECT name, true AS linked, registered FROM (${linkedNames('$1', '$2', '$4')}) k
+      ${isDefault ? `UNION ALL SELECT name, false, true FROM (${unlinkedNames('$1', '$4')}) u` : ''}`;
+    const where = 'WHERE ($3::text IS NULL OR name LIKE $3) AND ($5::boolean OR registered)';
     const counts = await this.db.query<{ total: string; inherited: string }>(
       `SELECT count(*) AS total, count(*) FILTER (WHERE NOT linked) AS inherited FROM (${names}) n ${where}`,
       params,
     );
     const n = params.length;
-    const rows = await this.db.query<{ name: string; linked: boolean }>(
-      `SELECT name, linked FROM (${names}) n ${where} ORDER BY name LIMIT $${n + 1} OFFSET $${n + 2}`,
+    const rows = await this.db.query<{ name: string; linked: boolean; registered: boolean }>(
+      `SELECT name, linked, registered FROM (${names}) n ${where} ORDER BY name LIMIT $${n + 1} OFFSET $${n + 2}`,
       [...params, limit, offset],
     );
     return { total: Number(counts.rows[0]!.total), inherited: Number(counts.rows[0]!.inherited), names: rows.rows };

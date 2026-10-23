@@ -62,8 +62,8 @@ These read the records index directly and return 501 on an instance without one.
 | `GET /v2/n/:name` | ENSv2 registry data for a name: registry, token id, status, expiry, resolver, subregistry, stored records, the record it reads (`record_id`), and whether that's its own link (`linked_record_id`) or the default (`uses_default`) |
 | `GET /v2/resolvers?account=0x…` | PermissionedResolvers the account has any role on: `roles` for every key, `key_grants` for single keys, and `manages_records` |
 | `GET /v2/resolvers/:address` | A PermissionedResolver's record count, default record, created/updated block and time, `unlinked_name_count`, accounts with root roles, and per-key grants |
-| `GET /v2/resolvers/:address/records?limit=&offset=` | The resolver's records, each with its stored values and the names using it (up to 100, plus `linked_name_count`, `inherited_name_count` and `name_count`) |
-| `GET /v2/resolvers/:address/records/:id/names?q=&limit=&offset=` | Every name using one record, alphabetical, with an exact `total`. `linked: false` marks names inheriting the default record. `q` is a case-insensitive substring search |
+| `GET /v2/resolvers/:address/records?limit=&offset=` | The resolver's records, each with its stored values and the names using it (up to 100, plus `linked_name_count`, `inherited_name_count` and `name_count`; links to unregistered names are left out and counted in `unregistered_link_count`) |
+| `GET /v2/resolvers/:address/records/:id/names?q=&limit=&offset=` | Every name using one record, alphabetical, with an exact `total`. `linked: false` marks names inheriting the default record. `q` is a case-insensitive substring search. Links to unregistered or expired names (e.g. `<id>.grails-config.invalid` placeholders apps link to create a record) are hidden unless `include_unregistered=true`, which marks them `registered: false` |
 
 How PermissionedResolver records work:
 - Records are numbered from 1 per resolver. A setter call for a name without a record creates one, and other names can be linked to an existing record (`linkToRecord` / `linkToNode`), so several names can share one record.

@@ -91,8 +91,10 @@ describe('http', () => {
     const withIndex = createApp({ profiles: fake, client: {} as PublicClient, config, index });
     const base = '/v2/resolvers/0x45600dAd96384A0a2A0A9ac9287D943bcFCf3EF9/records';
     assert.equal((await withIndex.request(`${base}/2/names?limit=5&offset=10&q=%20Ali%20`)).status, 200);
-    assert.deepEqual(calls[0], ['0x45600dAd96384A0a2A0A9ac9287D943bcFCf3EF9', '2', 5, 10, 'Ali']);
-    for (const bad of ['0/names', 'x/names', '1/names?limit=0', `1/names?q=${'a'.repeat(256)}`]) {
+    assert.deepEqual(calls[0], ['0x45600dAd96384A0a2A0A9ac9287D943bcFCf3EF9', '2', 5, 10, 'Ali', false]);
+    assert.equal((await withIndex.request(`${base}/2/names?include_unregistered=true`)).status, 200);
+    assert.equal(calls[1]![5], true);
+    for (const bad of ['0/names', 'x/names', '1/names?limit=0', `1/names?q=${'a'.repeat(256)}`, '1/names?include_unregistered=yes']) {
       assert.equal((await withIndex.request(`${base}/${bad}`)).status, 400, bad);
     }
     assert.equal((await withIndex.request('/v2/resolvers/0x0000000000000000000000000000000000000001/records/1/names')).status, 404);

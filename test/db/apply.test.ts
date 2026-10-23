@@ -146,8 +146,15 @@ describe('indexer apply', { skip: !URL_ && 'TEST_DATABASE_URL not set' }, () => 
   });
 
   it('resolver records: counts, linked names, default record, paging and Cleared', async () => {
+    const past = BigInt(Math.floor(Date.now() / 1000) - 86_400);
+    await apply(register(ROOT, 'eth'), ev(ROOT, 'SubregistryUpdated', { tokenId: tokenId('eth'), subregistry: ETH }));
+    for (const l of ['dave', 'erin', 'frank']) await apply(register(ETH, l));
+    await apply(register(ETH, 'gone', past)); // expired
     await apply(
       ev(RES, 'ResolverCreated', {}),
+      // an app placeholder that can never be registered, and an expired name: links, but not names
+      ev(RES, 'Linked', { recordId: 1n, node: namehash('ab12.grails-config.invalid'), name: dns('ab12.grails-config.invalid') }),
+      ev(RES, 'Linked', { recordId: 1n, node: namehash('gone.eth'), name: dns('gone.eth') }),
       ev(RES, 'Linked', { recordId: 1n, node: namehash('dave.eth'), name: dns('dave.eth') }),
       ev(RES, 'TextUpdated', { recordId: 1n, key: 'avatar', value: 'https://a' }),
       ev(RES, 'Linked', { recordId: 2n, node: zeroHash, name: '0x00' as Hex }),
@@ -165,6 +172,7 @@ describe('indexer apply', { skip: !URL_ && 'TEST_DATABASE_URL not set' }, () => 
       names: ['dave.eth', 'erin.eth'],
       name_count: 2,
       linked_name_count: 2,
+      unregistered_link_count: 2,
       inherited_name_count: 0,
       records: [{ kind: 'text', key: 'avatar', value: 'https://a', encoding: 'utf8' }],
     });
@@ -174,11 +182,23 @@ describe('indexer apply', { skip: !URL_ && 'TEST_DATABASE_URL not set' }, () => 
       { kind: 'addr', key: '60', value: '0x00000000000000000000000000000000000000aa', encoding: 'bytes', decoded: '0x00000000000000000000000000000000000000AA' },
     ]);
 
+    assert.equal(page!.records[2]!.unregistered_link_count, 0);
+
+    const hidden = await queries().recordNames(RES, '1', 10, 0);
+    assert.deepEqual([hidden!.total, hidden!.names.map((n) => n.name)], [2, ['dave.eth', 'erin.eth']]);
+    const shown = await queries().recordNames(RES, '1', 10, 0, undefined, true);
+    assert.deepEqual(shown!.names, [
+      { name: 'ab12.grails-config.invalid', linked: true, registered: false },
+      { name: 'dave.eth', linked: true, registered: true },
+      { name: 'erin.eth', linked: true, registered: true },
+      { name: 'gone.eth', linked: true, registered: false },
+    ]);
+
     const second = await queries().resolverRecords(RES, 1, 1);
     assert.deepEqual(second!.records.map((r) => r.record_id), ['2']);
 
     const inv = await apply(ev(RES, 'Cleared', { recordId: 1n }));
-    assert.deepEqual([...inv.names].sort(), ['dave.eth', 'erin.eth']);
+    assert.deepEqual([...inv.names].sort(), ['ab12.grails-config.invalid', 'dave.eth', 'erin.eth', 'gone.eth']);
     assert.deepEqual((await queries().resolverRecords(RES, 1, 0))!.records[0]!.records, []);
     assert.equal(await queries().resolverRecords(REG, 100, 0), null);
   });
@@ -238,10 +258,10 @@ describe('indexer apply', { skip: !URL_ && 'TEST_DATABASE_URL not set' }, () => 
     const all = await queries().recordNames(RES, '1', 10, 0);
     assert.equal(all!.total, 4);
     assert.deepEqual(all!.names, [
-      { name: 'bob.eth', linked: true },
-      { name: 'carol.eth', linked: false },
-      { name: 'erin.eth', linked: false },
-      { name: 'gina_x.eth', linked: false },
+      { name: 'bob.eth', linked: true, registered: true },
+      { name: 'carol.eth', linked: false, registered: true },
+      { name: 'erin.eth', linked: false, registered: true },
+      { name: 'gina_x.eth', linked: false, registered: true },
     ]);
     const paged = await queries().recordNames(RES, '1', 1, 1);
     assert.deepEqual([paged!.total, paged!.names.map((n) => n.name)], [4, ['carol.eth']]);
@@ -250,7 +270,7 @@ describe('indexer apply', { skip: !URL_ && 'TEST_DATABASE_URL not set' }, () => 
     assert.equal((await queries().recordNames(RES, '1', 10, 0, '_'))!.total, 1); // wildcards match literally
     assert.equal((await queries().recordNames(RES, '1', 10, 0, '%'))!.total, 0);
     const linkedOnly = await queries().recordNames(RES, '2', 10, 0);
-    assert.deepEqual([linkedOnly!.is_default, linkedOnly!.names], [false, [{ name: 'alice.eth', linked: true }]]);
+    assert.deepEqual([linkedOnly!.is_default, linkedOnly!.names], [false, [{ name: 'alice.eth', linked: true, registered: true }]]);
     assert.equal(await queries().recordNames(OTHER, '1', 10, 0), null);
 
     const n = async (name: string) => {

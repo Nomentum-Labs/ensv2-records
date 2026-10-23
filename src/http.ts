@@ -186,7 +186,11 @@ export function createApp(deps: { profiles: ProfileService; client: PublicClient
       const offset = intParam(c.req.query('offset'), 'offset', 0, 0, Number.MAX_SAFE_INTEGER);
       const q = c.req.query('q')?.trim() || undefined;
       if (q && q.length > MAX_QUERY_LENGTH) throw new InvalidInputError(`q must be at most ${MAX_QUERY_LENGTH} characters`);
-      return ix.recordNames(parseAddress(c.req.param('address')), id, limit, offset, q);
+      const unregistered = c.req.query('include_unregistered');
+      if (unregistered !== undefined && unregistered !== 'true' && unregistered !== 'false') {
+        throw new InvalidInputError('include_unregistered must be true or false');
+      }
+      return ix.recordNames(parseAddress(c.req.param('address')), id, limit, offset, q, unregistered === 'true');
     }),
   );
 
