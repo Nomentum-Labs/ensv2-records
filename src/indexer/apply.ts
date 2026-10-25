@@ -22,11 +22,26 @@ const nullIfZeroAddr = (a: unknown) => (a && lc(a) !== zeroAddress ? lc(a) : nul
 const childNode = (parentNode: string, labelhash: string) => keccak256(concat([parentNode as Hex, labelhash as Hex]));
 const childName = (label: string, parentName: string) => (parentName ? `${label}.${parentName}` : label);
 
+/**
+ * Postgres text can't hold NUL, and any resolver on chain can emit a record (or label) with one.
+ * NUL becomes U+FFFD rather than being dropped, so "abc\0" can't turn into the real "abc".
+ */
+export const pgSafeText = (s: string) => (s.includes('\u0000') ? s.replaceAll('\u0000', '\uFFFD') : s);
+
+/** Every string arg of a decoded log made safe for Postgres (see pgSafeText). */
+export function pgSafeArgs(args: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(args)) {
+    out[k] = typeof v === 'string' ? pgSafeText(v) : Array.isArray(v) ? v.map((x) => (typeof x === 'string' ? pgSafeText(x) : x)) : v;
+  }
+  return out;
+}
+
 /** DNS wire format → dotted name (labels are length-prefixed; terminated by a zero byte). */
 export function dnsDecode(hex: Hex): string {
   const b = Buffer.from(hex.slice(2), 'hex');
   const labels: string[] = [];
-  for (let i = 0; i < b.length && b[i]; i += b[i]! + 1) labels.push(b.subarray(i + 1, i + 1 + b[i]!).toString('utf8'));
+  for (let i = 0; i < b.length && b[i]; i += b[i]! + 1) labels.push(pgSafeText(b.subarray(i + 1, i + 1 + b[i]!).toString('utf8')));
   return labels.join('.');
 }
 

@@ -2,7 +2,7 @@ import { decodeEventLog, type Log, type PublicClient } from 'viem';
 import type { Cache } from '../cache.js';
 import type { Config } from '../config.js';
 import { withTx, type Db } from '../db/pool.js';
-import { Applier, type DecodedLog, type Invalidations } from './apply.js';
+import { Applier, pgSafeArgs, type DecodedLog, type Invalidations } from './apply.js';
 import { allTopics, resolverBackfillTopics, topicsByEvent } from './events.js';
 
 /** Beyond this many names in one batch, skip targeted invalidation and let the TTL expire them. */
@@ -214,7 +214,7 @@ export class Indexer {
           block: Number(l.blockNumber),
           logIndex: Number(l.logIndex),
           eventName: d.eventName as string,
-          args: d.args as Record<string, unknown>,
+          args: pgSafeArgs(d.args as Record<string, unknown>),
         });
       } catch {
         // A contract emitting an event with our topic but a different layout (e.g. no indexed
