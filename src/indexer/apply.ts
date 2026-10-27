@@ -29,9 +29,10 @@ const childName = (label: string, parentName: string) => (parentName ? `${label}
 export const pgSafeText = (s: string) => (s.includes('\u0000') ? s.replaceAll('\u0000', '\uFFFD') : s);
 
 /** Every string arg of a decoded log made safe for Postgres (see pgSafeText). */
-export function pgSafeArgs(args: Record<string, unknown>): Record<string, unknown> {
+export function pgSafeArgs(args: Record<string, unknown> | undefined): Record<string, unknown> {
   const out: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(args)) {
+  // viem decodes events without arguments (ResolverCreated()) to undefined args
+  for (const [k, v] of Object.entries(args ?? {})) {
     out[k] = typeof v === 'string' ? pgSafeText(v) : Array.isArray(v) ? v.map((x) => (typeof x === 'string' ? pgSafeText(x) : x)) : v;
   }
   return out;

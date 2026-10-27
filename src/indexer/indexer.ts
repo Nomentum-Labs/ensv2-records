@@ -207,19 +207,21 @@ export class Indexer {
       if (l.removed) continue;
       const event = topicsByEvent.get(l.topics[0] ?? '');
       if (!event) continue;
+      let d;
       try {
-        const d = decodeEventLog({ abi: [event], data: l.data, topics: l.topics, strict: true });
-        out.push({
-          address: l.address.toLowerCase(),
-          block: Number(l.blockNumber),
-          logIndex: Number(l.logIndex),
-          eventName: d.eventName as string,
-          args: pgSafeArgs(d.args as Record<string, unknown>),
-        });
+        d = decodeEventLog({ abi: [event], data: l.data, topics: l.topics, strict: true });
       } catch {
         // A contract emitting an event with our topic but a different layout (e.g. no indexed
         // args). Not one of the contracts we care about.
+        continue;
       }
+      out.push({
+        address: l.address.toLowerCase(),
+        block: Number(l.blockNumber),
+        logIndex: Number(l.logIndex),
+        eventName: d.eventName as string,
+        args: pgSafeArgs(d.args as Record<string, unknown> | undefined),
+      });
     }
     return out.sort((a, b) => a.block - b.block || a.logIndex - b.logIndex);
   }

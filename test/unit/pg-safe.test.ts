@@ -28,6 +28,13 @@ describe('pgSafeArgs', () => {
     assert.equal(args.node, node);
   });
 
+  it('accepts events without arguments (viem decodes ResolverCreated() to undefined args)', () => {
+    const abi = parseAbi(['event ResolverCreated()']);
+    const topics = encodeEventTopics({ abi, eventName: 'ResolverCreated' });
+    const d = decodeEventLog({ abi, data: '0x', topics: topics as [Hex, ...Hex[]], strict: true });
+    assert.deepEqual(pgSafeArgs(d.args as unknown as Record<string, unknown> | undefined), {});
+  });
+
   it('passes bigints and arrays of non-strings through', () => {
     assert.deepEqual(pgSafeArgs({ id: 5n, ids: [1n, 2n], labels: ['a\u0000'] }), { id: 5n, ids: [1n, 2n], labels: ['a�'] });
   });
