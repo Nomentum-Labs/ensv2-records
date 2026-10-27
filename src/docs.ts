@@ -337,12 +337,12 @@ export function openApiSpec(config: Config, hasIndex: boolean) {
         get: {
           operationId: 'getIndexedToken',
           tags: ['Index'],
-          summary: 'ENSv2 label by registry and token id',
+          summary: 'ENSv2 label by registry and token id or namehash',
           description:
-            'The label behind a token id in an ENSv2 registry. Any version of the token id finds the label (the low 32 bits are a version counter that changes on regeneration); `current` says whether the id asked for is the current one. Reserved (premigrated v1) labels are included, so a v1 BaseRegistrar token id (the labelhash) also finds its name in the ETHRegistry. `name` is null for registries not reachable from the root. Returns 501 when this instance has no index.',
+            'The label behind a token id in an ENSv2 registry. Any version of the token id finds the label (the low 32 bits are a version counter that changes on regeneration); `current` says whether the id asked for is the current one. Reserved (premigrated v1) labels are included, so a v1 BaseRegistrar token id (the labelhash) also finds its name in the ETHRegistry. When no token id matches, the id is tried as the name\'s namehash, so a namehash also finds it (`matched_by` says which matched). `name` is null for registries not reachable from the root. Returns 501 when this instance has no index.',
           parameters: [
             { name: 'registry', in: 'path', required: true, description: 'ENSv2 registry address', schema: { type: 'string' }, example: '0xd4ebcbbdf463c9c45784603db0ddd499bc44a8b4' },
-            { name: 'tokenId', in: 'path', required: true, description: 'uint256 token id, decimal or 0x hex', schema: { type: 'string' }, example: '32734455225614265237472656242865744288490494906533098096798569357815119347712' },
+            { name: 'tokenId', in: 'path', required: true, description: 'uint256 token id or namehash, decimal or 0x hex', schema: { type: 'string' }, example: '32734455225614265237472656242865744288490494906533098096798569357815119347712' },
           ],
           responses: {
             '200': { description: 'Indexed label', content: json('IndexedToken') },
@@ -507,6 +507,7 @@ export function openApiSpec(config: Config, hasIndex: boolean) {
             label_key: { type: 'string', description: 'Token id with its 32 version bits zeroed (stable across regenerations)' },
             token_id: { type: ['string', 'null'], description: 'Current ERC1155 token id' },
             current: { type: 'boolean', description: 'True when the token id asked for is the current one' },
+            matched_by: { type: 'string', enum: ['token_id', 'namehash'], description: 'Whether the id asked for matched as a token id (any version) or as the namehash' },
             label: { type: ['string', 'null'] },
             labelhash: { type: ['string', 'null'] },
             name: { type: ['string', 'null'], description: 'Full name; null when the registry is not reachable from the root' },

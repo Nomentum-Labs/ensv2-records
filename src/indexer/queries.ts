@@ -35,6 +35,8 @@ export type IndexedToken = {
   token_id: string | null;
   /** True when the token id asked for is the current one. */
   current: boolean;
+  /** How the id asked for matched: as a token id (any version), or as the name's namehash. */
+  matched_by: 'token_id' | 'namehash';
   label: string | null;
   labelhash: string | null;
   /** Full name, when the registry is reachable from the root. */
@@ -239,8 +241,12 @@ export class IndexQueries {
     };
   }
 
-  /** The label behind an ENSv2 token id in `registry`. Any version of the token id finds it. */
+  /**
+   * The label behind an ENSv2 token id in `registry`. Any version of the token id finds it; when
+   * none does, the id is tried as the label's namehash (node).
+   */
   async token(registry: string, tokenId: bigint): Promise<IndexedToken | null> {
+    const id = pad(toHex(tokenId), { size: 32 }).toLowerCase();
     const r = await this.db.query<{
       registry: string;
       label_key: string;
@@ -256,14 +262,17 @@ export class IndexQueries {
       updated_block: string;
     }>(
       `SELECT registry, label_key, token_id, label, labelhash, name, node, status, expiry, resolver, subregistry, updated_block
-       FROM registry_labels WHERE registry = $1 AND label_key = $2`,
-      [registry.toLowerCase(), labelKeyOf(tokenId)],
+       FROM registry_labels WHERE registry = $1 AND (label_key = $2 OR node = $3)
+       ORDER BY (label_key = $2) DESC LIMIT 1`,
+      [registry.toLowerCase(), labelKeyOf(tokenId), id],
     );
     const row = r.rows[0];
     if (!row) return null;
+    const matchedBy = row.label_key === labelKeyOf(tokenId) ? 'token_id' : 'namehash';
     return {
       ...row,
-      current: row.token_id === pad(toHex(tokenId), { size: 32 }).toLowerCase(),
+      current: matchedBy === 'token_id' && row.token_id === id,
+      matched_by: matchedBy,
       expiry: row.expiry === null ? null : Number(row.expiry),
       updated_block: Number(row.updated_block),
     };

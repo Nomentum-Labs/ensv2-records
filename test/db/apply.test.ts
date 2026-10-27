@@ -120,6 +120,22 @@ describe('indexer apply', { skip: !URL_ && 'TEST_DATABASE_URL not set' }, () => 
     assert.equal(reserved?.name, 'erin.eth');
     assert.equal(await q.token(ETH, tokenId('nobody')), null);
     assert.equal(await q.token(SUB, tokenId('dave')), null);
+    assert.equal(old?.matched_by, 'token_id');
+  });
+
+  it('token lookup by namehash: registered and reserved labels, only in their own registry', async () => {
+    const q = new IndexQueries(db, 'test');
+    await apply(register(ROOT, 'eth'), ev(ROOT, 'SubregistryUpdated', { tokenId: tokenId('eth'), subregistry: ETH }));
+    await apply(register(ETH, 'dave'), ev(ETH, 'TokenRegenerated', { oldTokenId: tokenId('dave'), newTokenId: tokenId('dave', 1) }));
+    const byNode = await q.token(ETH, BigInt(namehash('dave.eth')));
+    assert.equal(byNode?.name, 'dave.eth');
+    assert.equal(byNode?.matched_by, 'namehash');
+    assert.equal(byNode?.current, false);
+    assert.equal(byNode?.token_id, pad(toHex(tokenId('dave', 1)), { size: 32 }));
+    await apply(ev(ETH, 'LabelReserved', { tokenId: tokenId('erin'), labelHash: lh('erin'), label: 'erin', expiry: 2_000_000_000n }));
+    assert.equal((await q.token(ETH, BigInt(namehash('erin.eth'))))?.status, 'reserved');
+    assert.equal(await q.token(SUB, BigInt(namehash('dave.eth'))), null);
+    assert.equal(await q.token(ETH, BigInt(namehash('nobody.eth'))), null);
   });
 
   it('keys: linked record, default record, unlink, node-keyed and the v1 bridge', async () => {
