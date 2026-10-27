@@ -102,6 +102,26 @@ describe('indexer apply', { skip: !URL_ && 'TEST_DATABASE_URL not set' }, () => 
     assert.equal((await label(ETH, 'carol')).status, 'registered');
   });
 
+  it('token lookup: any version of the token id, the v1 labelhash, reserved labels', async () => {
+    const q = new IndexQueries(db, 'test');
+    await apply(register(ROOT, 'eth'), ev(ROOT, 'SubregistryUpdated', { tokenId: tokenId('eth'), subregistry: ETH }));
+    await apply(register(ETH, 'dave'), ev(ETH, 'TokenRegenerated', { oldTokenId: tokenId('dave'), newTokenId: tokenId('dave', 1) }));
+    const old = await q.token(ETH.toUpperCase().replace('0X', '0x'), tokenId('dave'));
+    assert.equal(old?.name, 'dave.eth');
+    assert.equal(old?.label, 'dave');
+    assert.equal(old?.current, false);
+    assert.equal(old?.token_id, pad(toHex(tokenId('dave', 1)), { size: 32 }));
+    assert.equal((await q.token(ETH, tokenId('dave', 1)))?.current, true);
+    // a v1 BaseRegistrar token id is the full labelhash; its low 32 bits are ignored
+    assert.equal((await q.token(ETH, BigInt(lh('dave'))))?.name, 'dave.eth');
+    await apply(ev(ETH, 'LabelReserved', { tokenId: tokenId('erin'), labelHash: lh('erin'), label: 'erin', expiry: 2_000_000_000n }));
+    const reserved = await q.token(ETH, BigInt(lh('erin')));
+    assert.equal(reserved?.status, 'reserved');
+    assert.equal(reserved?.name, 'erin.eth');
+    assert.equal(await q.token(ETH, tokenId('nobody')), null);
+    assert.equal(await q.token(SUB, tokenId('dave')), null);
+  });
+
   it('keys: linked record, default record, unlink, node-keyed and the v1 bridge', async () => {
     const keys = new IndexedKeySource(db, V1);
     const node = namehash('dave.eth');

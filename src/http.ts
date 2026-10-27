@@ -26,6 +26,16 @@ function toError(err: unknown): { status: 400 | 404 | 500 | 502; error: string }
 const MAX_RECORDS_PAGE = 500;
 const MAX_QUERY_LENGTH = 255;
 
+const MAX_UINT256 = (1n << 256n) - 1n;
+
+/** A uint256 token id, decimal or 0x hex. */
+function parseTokenId(raw: string): bigint {
+  if (!/^(0x[0-9a-fA-F]{1,64}|\d{1,78})$/.test(raw)) throw new InvalidInputError('tokenId must be a uint256, decimal or 0x hex');
+  const id = BigInt(raw);
+  if (id > MAX_UINT256) throw new InvalidInputError('tokenId must be a uint256, decimal or 0x hex');
+  return id;
+}
+
 /** Optional integer query param within [min, max]. */
 function intParam(raw: string | undefined, name: string, fallback: number, min: number, max: number): number {
   if (raw === undefined || raw === '') return fallback;
@@ -154,6 +164,11 @@ export function createApp(deps: { profiles: ProfileService; client: PublicClient
       return c.json(e, e.status);
     }
   };
+
+  /** The label behind an ENSv2 token id in a registry; any version of the token id finds it. */
+  app.get('/v2/token/:registry/:tokenId', (c) =>
+    indexed(c, (ix) => ix.token(parseAddress(c.req.param('registry')), parseTokenId(c.req.param('tokenId')))),
+  );
 
   /** PermissionedResolvers an account holds any role on (every key or a single key). */
   app.get('/v2/resolvers', (c) =>

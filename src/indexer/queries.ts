@@ -1,5 +1,6 @@
 import { namehash, pad, toHex, zeroHash, type Hex } from 'viem';
 import type { Db } from '../db/pool.js';
+import { labelKeyOf } from './apply.js';
 import { describeRecord, type RecordValue, type StoredRecord } from '../record-values.js';
 import { canManage, decodeRoles, describeArgument, type DecodedRoles, type GrantArgument } from '../roles.js';
 
@@ -22,6 +23,27 @@ export type IndexedName = {
   uses_default: boolean;
   /** Records the indexer has seen on the name's resolver (values here may lag the chain; use /n for live values). */
   records: RecordValue[];
+  updated_block: number;
+};
+
+/** A label in an ENSv2 registry, found by any version of its token id. */
+export type IndexedToken = {
+  registry: string;
+  /** Token id with its 32 version bits zeroed: stable across regenerations. */
+  label_key: string;
+  /** Current ERC1155 token id (changes on regeneration). */
+  token_id: string | null;
+  /** True when the token id asked for is the current one. */
+  current: boolean;
+  label: string | null;
+  labelhash: string | null;
+  /** Full name, when the registry is reachable from the root. */
+  name: string | null;
+  node: string | null;
+  status: string;
+  expiry: number | null;
+  resolver: string | null;
+  subregistry: string | null;
   updated_block: number;
 };
 
@@ -213,6 +235,36 @@ export class IndexQueries {
       linked_record_id: linkedId,
       uses_default: linkedId === null && recordId !== null,
       records,
+      updated_block: Number(row.updated_block),
+    };
+  }
+
+  /** The label behind an ENSv2 token id in `registry`. Any version of the token id finds it. */
+  async token(registry: string, tokenId: bigint): Promise<IndexedToken | null> {
+    const r = await this.db.query<{
+      registry: string;
+      label_key: string;
+      token_id: string | null;
+      label: string | null;
+      labelhash: string | null;
+      name: string | null;
+      node: string | null;
+      status: string;
+      expiry: string | null;
+      resolver: string | null;
+      subregistry: string | null;
+      updated_block: string;
+    }>(
+      `SELECT registry, label_key, token_id, label, labelhash, name, node, status, expiry, resolver, subregistry, updated_block
+       FROM registry_labels WHERE registry = $1 AND label_key = $2`,
+      [registry.toLowerCase(), labelKeyOf(tokenId)],
+    );
+    const row = r.rows[0];
+    if (!row) return null;
+    return {
+      ...row,
+      current: row.token_id === pad(toHex(tokenId), { size: 32 }).toLowerCase(),
+      expiry: row.expiry === null ? null : Number(row.expiry),
       updated_block: Number(row.updated_block),
     };
   }

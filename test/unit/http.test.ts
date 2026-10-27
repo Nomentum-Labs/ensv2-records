@@ -75,7 +75,7 @@ describe('http', () => {
   });
 
   it('index routes answer 501 without an index', async () => {
-    for (const p of ['/v2/n/a.eth', '/v2/resolvers?account=0x113A0ffeADa47e110Ad01098BEBA3403060978FB', '/v2/resolvers/0x45600dAd96384A0a2A0A9ac9287D943bcFCf3EF9/records', '/v2/resolvers/0x45600dAd96384A0a2A0A9ac9287D943bcFCf3EF9/records/1/names']) {
+    for (const p of ['/v2/n/a.eth', '/v2/token/0xd4ebcbbdf463c9c45784603db0ddd499bc44a8b4/1', '/v2/resolvers?account=0x113A0ffeADa47e110Ad01098BEBA3403060978FB', '/v2/resolvers/0x45600dAd96384A0a2A0A9ac9287D943bcFCf3EF9/records', '/v2/resolvers/0x45600dAd96384A0a2A0A9ac9287D943bcFCf3EF9/records/1/names']) {
       assert.equal((await get(p)).status, 501, p);
     }
   });
@@ -100,6 +100,27 @@ describe('http', () => {
     assert.equal((await withIndex.request('/v2/resolvers/0x0000000000000000000000000000000000000001/records/1/names')).status, 404);
   });
 
+  it('token lookup: parses the registry and token id (decimal or hex)', async () => {
+    const calls: unknown[][] = [];
+    const index = {
+      async token(...args: unknown[]) {
+        calls.push(args);
+        return args[1] === 2n ? null : { name: 'a.eth' };
+      },
+    } as unknown as IndexQueries;
+    const withIndex = createApp({ profiles: fake, client: {} as PublicClient, config, index });
+    const base = '/v2/token/0xd4ebcbbdf463c9c45784603db0ddd499bc44a8b4';
+    const id = '32734455225614265237472656242865744288490494906533098096798569357815119347712';
+    assert.equal((await withIndex.request(`${base}/${id}`)).status, 200);
+    assert.deepEqual(calls[0], ['0xD4eBcbBdF463C9c45784603Db0dDD499BC44A8B4', BigInt(id)]);
+    assert.equal((await withIndex.request(`${base}/0x${BigInt(id).toString(16)}`)).status, 200);
+    assert.equal(calls[1]![1], BigInt(id));
+    assert.equal((await withIndex.request(`${base}/2`)).status, 404);
+    for (const bad of [`${base}/-1`, `${base}/1.5`, `${base}/abc`, `${base}/0x${'f'.repeat(65)}`, `${base}/${'9'.repeat(79)}`, `${base}/${(1n << 256n).toString()}`, '/v2/token/0x123/1']) {
+      assert.equal((await withIndex.request(bad)).status, 400, bad);
+    }
+  });
+
   it('unknown routes', async () => {
     assert.deepEqual(await (await get('/nope')).json(), { status: 404, error: 'Unknown route' });
   });
@@ -117,7 +138,7 @@ describe('docs', () => {
     assert.match(page, /@scalar\/api-reference@\d+\.\d+\.\d+\/.*integrity="sha384-/s);
     const spec = (await (await get('/docs/openapi.json')).json()) as { openapi: string; paths: Record<string, unknown> };
     assert.equal(spec.openapi, '3.1.0');
-    for (const p of ['/n/{name}', '/a/{address}', '/u/{nameOrAddress}', '/bulk/n', '/bulk/a', '/bulk/u', '/i/{nameOrAddress}', '/h/{nameOrAddress}', '/v2/n/{name}', '/v2/resolvers', '/v2/resolvers/{address}', '/v2/resolvers/{address}/records', '/v2/resolvers/{address}/records/{id}/names', '/health', '/this']) {
+    for (const p of ['/n/{name}', '/a/{address}', '/u/{nameOrAddress}', '/bulk/n', '/bulk/a', '/bulk/u', '/i/{nameOrAddress}', '/h/{nameOrAddress}', '/v2/n/{name}', '/v2/token/{registry}/{tokenId}', '/v2/resolvers', '/v2/resolvers/{address}', '/v2/resolvers/{address}/records', '/v2/resolvers/{address}/records/{id}/names', '/health', '/this']) {
       assert.ok(spec.paths[p], `missing ${p}`);
     }
   });
